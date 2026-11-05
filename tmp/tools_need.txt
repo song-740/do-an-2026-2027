@@ -1,0 +1,99 @@
+III. Tool cài trên máy Client (TRƯỚC khi demo)
+Nhóm 1: Thu thập log (bắt buộc cấu hình trước)
+┌─────────────────────────────────────────────────────────────┐
+│ ĐẶC BIỆT QUAN TRỌNG: Windows Event Forwarding (WEF)         │
+│ stage2 xóa log CỤC BỘ nhưng không thể xóa log đã forward    │
+│ → Gửi Sysmon + Security + PowerShell sang máy analysis      │
+└─────────────────────────────────────────────────────────────┘
+Sysmon (ưu tiên số 1)
+
+Config: dùng Olaf Hartong sysmon-modular — bật đủ Event ID 1 (Process Create), 3 (Network), 7 (ImageLoad), 8 (CreateRemoteThread), 10 (ProcessAccess), 11 (File), 12/13/14 (Registry), 17/18 (Pipe), 19/20/21 (WMI subscription)
+Lý do Event 19/20/21 cực kỳ quan trọng ở đây: sẽ ghi lại việc tạo WMI NotepadTrigger
+
+PowerShell logging qua GPO/registry (trước khi stage2 disable):
+
+HKLM\SOFTWARE\Policies\Microsoft\Windows\PowerShell\
+  ScriptBlockLogging\EnableScriptBlockLogging = 1
+  ModuleLogging\EnableModuleLogging = 1
+  Transcription\EnableTranscripting = 1
+
+
+Audit Process Creation + Command Line (Event 4688):
+
+Secpol.msc → Advanced Audit Policy → Detailed Tracking → Process Creation: Success
+Enable “Include command line in process creation events”
+
+WEF Collector trên máy analysis:
+
+wecutil qc trên collector
+winrm quickconfig trên client
+Subscription: forward Security, Sysmon, PowerShell/Operational, WMI-Activity
+---------------------------------------------------------------------------------------------------------------------
+
+Nhóm 2: Quan sát trực tiếp trong khi demo
+Tool	Mục đích khi demo
+Procmon (Sysinternals)	Process/file/registry activity real-time
+Process Explorer	Thấy injection vào notepad.exe (strings, DLL map)
+Autoruns	WMI subscription, Scheduled Task xuất hiện live
+TCPView	Thấy notepad.exe có kết nối mạng (bất thường)
+Wireshark + Npcap	Bắt toàn bộ traffic C2 / revshell / exfil
+---------------------------------------------------------------------------------------------------------------------
+
+Nhóm 3: Thu thập bằng chứng sau tấn công (trên client)
+
+KAPE (Kroll Artifact Parser and Extractor)
+
+Target: !SANS_Triage — một lệnh lấy EVTX, Registry hives, Prefetch, MFT, WMI OBJECTS.DATA, Scheduled Tasks, $MFT, ShimCache, Amcache
+Portable, chạy từ USB, không cài thêm gì
+
+WinPmem / DumpIt / Magnet RAM Capture
+
+Lấy RAM trước khi tắt máy — đây là bằng chứng duy nhất cho injected code trong notepad
+
+FTK Imager (nếu cần full disk image)
+
+Thứ tự thu thập đúng (theo volatility order):
+1. RAM dump (WinPmem)
+2. Network capture (nếu chưa bắt từ trước)
+3. KAPE triage (EVTX, Registry, Prefetch, WMI, MFT)
+4. Disk image nếu cần
+
+IV. Tool trên máy Analysis
+Pha 3.2.1 — Phân tích Tĩnh
+Tool	Tìm gì trong scenario này
+CyberChef	Decode Base64 Payload trong registry APT29Stage1 → lấy lại wmi_setup.ps1
+PSDecode / PowerDecode	Giải obfuscation các -Enc base64 encoded PowerShell command
+FLOSS (FireEye)	Extract strings từ payload, tìm C2 URL, IP, port trong binary/script
+YARA	Quét file HTA và scripts với rules: WMI subscription, IEX+DownloadString, GetAsyncKeyState, TCPClient
+olevba / oletools	Phân tích VBScript trong HTA, detect WshShell.Run
+CAPA	Identify capabilities trong payload tĩnh (nếu có PE)
+
+Output cụ thể: Dựng lại wmi_setup.ps1 từ registry → xác nhận C2 IP:port, tên subscription, trigger query.
+---------------------------------------------------------------------------------------------------------------------
+Pha 3.2.2 — Phân tích Động (log/artifact)
+Chainsaw hoặc Hayabusa (dùng Sigma rules trên EVTX):
+Sẽ detect: PowerShell encoded commands, WMI process spawn, log clearing events, scheduled task creation
+
+Eric Zimmerman Tools:
+
+EvtxECmd.exe → parse EVTX sang CSV → import Timeline Explorer
+MFTECmd.exe → parse $MFT → xem file nào đã tạo/xóa và timestamp
+RECmd.exe với batch file RECmd_batch_MC.reb → parse registry, tìm APT29Stage1 Payload
+AmcacheParser.exe → xác nhận binary execution (mshta.exe, powershell.exe, cmd.exe, schtasks.exe)
+PECmd.exe → parse Prefetch, xác nhận các process đã chạy + DLL/file chúng access
+
+WMI artifact analysis:
+
+python-cim hoặc flare-wmi: parse OBJECTS.DATA từ C:\Windows\System32\wbem\Repository\
+PyWMIPersistenceFinder: tự động tìm WMI persistence (NotepadTrigger Filter/Consumer/Binding)
+
+Wireshark / NetworkMiner:
+
+Filter: ip.addr == 192.168.56.100 → thấy HTTPS :8443, TCP :4444, TCP :5555
+Nếu dùng self-signed cert → export certificate, extract SNI, analyze handshake
+NetworkMiner: reconstruct files được download (các .ps1 từ C2)
+
+RITA (Real Intelligence Threat Analytics): phát hiện beacon pattern từ revshell (kết nối đều đặn mỗi 30s khi mất kết nối)
+---------------------------------------------------------------------------------------------------------------------
+Pha 3.2.3 — Phân tích Bộ nhớ
+Volatility 3 — các plugin quan trọng nhất cho scenario này:

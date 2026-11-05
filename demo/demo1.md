@@ -278,6 +278,140 @@ Set-ExecutionPolicy Bypass -Scope Process -Force
 
 ```ps1
 # ==============================================================================
+# SCRIPT ULTIMATE CLEANUP: TAT TOAN BO LOG & XOA TAN GOC FILE TRANSCRIPT
+# ==============================================================================
+
+Write-Host "Dang tien hanh tat va xoa toan bo log..." -ForegroundColor Cyan
+
+# ------------------------------------------------------------------------------
+# PHAN 1: TAT TOAN BO CAC CO CHE GHI LOG
+# ------------------------------------------------------------------------------
+Write-Host "`n[1] Dang tat cac co che ghi log..." -ForegroundColor Yellow
+
+# 1.1. Tắt kênh PowerShell Operational
+wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:false | Out-Null
+# 1.2. Tắt Script Block Logging (4104)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+# 1.3. Tắt Module Logging (4103)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging" -Name "EnableModuleLogging" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+# 1.4. Tắt Transcription (Ghi file text)
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription" -Name "EnableTranscripting" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+# 1.5. Tắt các kênh log khác
+wevtutil sl "Microsoft-Windows-TaskScheduler/Operational" /e:false | Out-Null
+wevtutil sl "Microsoft-Windows-Sysmon/Operational" /e:false | Out-Null
+wevtutil sl "Microsoft-Windows-WMI-Activity/Operational" /e:false | Out-Null
+
+Write-Host " -> Da tat xong cac co che ghi log." -ForegroundColor Green
+
+# ------------------------------------------------------------------------------
+# PHAN 2: XOA SACH DU LIEU EVENT LOG
+# ------------------------------------------------------------------------------
+Write-Host "`n[2] Dang xoa sach du lieu Event Log..." -ForegroundColor Yellow
+
+wevtutil cl "Microsoft-Windows-PowerShell/Operational" | Out-Null
+wevtutil cl "Microsoft-Windows-TaskScheduler/Operational" | Out-Null
+wevtutil cl "Microsoft-Windows-Sysmon/Operational" | Out-Null
+wevtutil cl "Microsoft-Windows-WMI-Activity/Operational" | Out-Null
+
+Write-Host " -> Da xoa sach Event Log." -ForegroundColor Green
+
+# ------------------------------------------------------------------------------
+# PHAN 3: TRUY LUNG VA XOA TAN GOC FILE TRANSCRIPT (.txt)
+# ------------------------------------------------------------------------------
+Write-Host "`n[3] Dang quet toan bo o C de tim file Transcript..." -ForegroundColor Yellow
+Write-Host " (Qua trinh nay co the mat vai chuc giay, vui long cho doi...)" -ForegroundColor DarkGray
+
+# Tim tat ca cac file co ten chua "PowerShell_transcript" tren toan o C
+$transcripts = Get-ChildItem -Path C:\ -Filter "*PowerShell_transcript*" -File -Recurse -ErrorAction SilentlyContinue
+
+if ($transcripts) {
+    Write-Host " -> Tim thay $($transcripts.Count) file. Dang tien hanh xoa..." -ForegroundColor Red
+    foreach ($file in $transcripts) {
+        Write-Host "    + Dang xoa: $($file.FullName)" -ForegroundColor DarkGray
+        Remove-Item -Path $file.FullName -Force -ErrorAction SilentlyContinue
+    }
+} else {
+    Write-Host " -> Khong tim thay file transcript nao." -ForegroundColor Green
+}
+
+# Xoa thu muc C:\Transcripts neu co ton tai
+if (Test-Path "C:\Transcripts") {
+    Remove-Item -Path "C:\Transcripts\*" -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host " -> Da don dep thu muc C:\Transcripts" -ForegroundColor Green
+}
+
+# ==============================================================================
+# THONG BAO HOAN TAT
+# ==============================================================================
+
+Write-Host "`n==================================================" -ForegroundColor Green
+Write-Host "           DA HOAN TAT DON DEP TAN GOC!           " -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Green
+Write-Host " - Cac kenh Event Log : Da tat & Xoa sach" -ForegroundColor White
+Write-Host " - ScriptBlock (4104) : Da tat (Registry = 0)" -ForegroundColor White
+Write-Host " - ModuleLogging (4103): Da tat (Registry = 0)" -ForegroundColor White
+Write-Host " - Transcription (TXT) : Da tat & Xoa sach file cu" -ForegroundColor White
+Write-Host "==================================================" -ForegroundColor Green
+Write-Host " Ban co the bat dau phien test moi.`n" -ForegroundColor Green
+```
+
+```ps1
+# ==============================================================================
+# SCRIPT DON DEP LOG & TAT TINH NANG GIAM SAT (DANH CHO LAB)
+# ==============================================================================
+
+Write-Host "Dang tien hanh tat va xoa log..." -ForegroundColor Cyan
+
+# 1. PowerShell (Script Block Logging & Log Channel)
+Write-Host " -> Dang xu ly PowerShell/Operational (Script Block)..." -ForegroundColor Yellow
+wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:false | Out-Null
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging" -Name "EnableScriptBlockLogging" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+wevtutil cl "Microsoft-Windows-PowerShell/Operational" | Out-Null
+
+# 2. PowerShell (Module Logging - Event 4103)
+Write-Host " -> Dang xu ly PowerShell/ModuleLogging (Event 4103)..." -ForegroundColor Yellow
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging" -Name "EnableModuleLogging" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+# 3. PowerShell (Transcription - Ghi file text)
+Write-Host " -> Dang xu ly PowerShell/Transcription (File text)..." -ForegroundColor Yellow
+Set-ItemProperty -Path "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription" -Name "EnableTranscripting" -Value 0 -Type DWord -ErrorAction SilentlyContinue
+
+# 4. Task Scheduler
+Write-Host " -> Dang xu ly TaskScheduler/Operational..." -ForegroundColor Yellow
+wevtutil sl "Microsoft-Windows-TaskScheduler/Operational" /e:false | Out-Null
+wevtutil clear-log "Microsoft-Windows-TaskScheduler/Operational" | Out-Null
+
+# 5. Sysmon
+Write-Host " -> Dang xu ly Sysmon/Operational..." -ForegroundColor Yellow
+wevtutil sl "Microsoft-Windows-Sysmon/Operational" /e:false | Out-Null
+wevtutil clear-log "Microsoft-Windows-Sysmon/Operational" | Out-Null
+
+# 6. WMI Activity
+Write-Host " -> Dang xu ly WMI-Activity/Operational..." -ForegroundColor Yellow
+wevtutil sl "Microsoft-Windows-WMI-Activity/Operational" /e:false | Out-Null
+wevtutil clear-log "Microsoft-Windows-WMI-Activity/Operational" | Out-Null
+
+# ==============================================================================
+# THONG BAO TREN CONSOLE (KHONG DUNG GUI)
+# ==============================================================================
+
+Write-Host "`n==================================================" -ForegroundColor Green
+Write-Host "           DA HOAN TAT DON DEP LAB!               " -ForegroundColor Green
+Write-Host "==================================================" -ForegroundColor Green
+Write-Host " - PowerShell Log      : Da tat & Xoa" -ForegroundColor White
+Write-Host " - ScriptBlockLogging  : Da tat (Registry = 0)" -ForegroundColor White
+Write-Host " - ModuleLogging (4103): Da tat (Registry = 0)" -ForegroundColor White
+Write-Host " - Transcription (TXT) : Da tat (Registry = 0)" -ForegroundColor White
+Write-Host " - TaskScheduler Log   : Da tat & Xoa" -ForegroundColor White
+Write-Host " - Sysmon Log          : Da tat & Xoa" -ForegroundColor White
+Write-Host " - WMI-Activity Log    : Da tat & Xoa" -ForegroundColor White
+Write-Host "==================================================" -ForegroundColor Green
+Write-Host " Ban co the bat dau phien test moi.`n" -ForegroundColor Green
+```
+
+```ps1
+# ==============================================================================
 # SCRIPT DON DEP LOG & TAT TINH NANG GIAM SAT (DANH CHO LAB)
 # ==============================================================================
 
@@ -375,7 +509,6 @@ notepad C:\info.ps1
 
 <details>
 <summary>Bấm vào đây để xem nội dung</summary>
-
 
 ```ps1
 
@@ -981,6 +1114,613 @@ Write-Host ""
 
 ```
 
+<!-- 
+```ps1
+
+# ============================================================
+# DFIR LOGGING STATUS - WINDOWS 10
+# READ ONLY - SAFE REGISTRY CHECKS
+# NO CLEAR-HOST
+# ============================================================
+
+$ErrorActionPreference = "Continue"
+
+$LogConfigs = @(
+    @{
+        Name = "Sysmon"
+        LogName = "Microsoft-Windows-Sysmon/Operational"
+        ExpectedMB = 256
+        Service = "Sysmon64"
+    },
+    @{
+        Name = "PowerShell"
+        LogName = "Microsoft-Windows-PowerShell/Operational"
+        ExpectedMB = 128
+        Service = ""
+    },
+    @{
+        Name = "WMI-Activity"
+        LogName = "Microsoft-Windows-WMI-Activity/Operational"
+        ExpectedMB = 32
+        Service = "Winmgmt"
+    },
+    @{
+        Name = "Task Scheduler"
+        LogName = "Microsoft-Windows-TaskScheduler/Operational"
+        ExpectedMB = 64
+        Service = "Schedule"
+    }
+)
+
+# ============================================================
+# REGISTRY PATHS
+# ============================================================
+
+$PolicyRoot = "SOFTWARE\Policies\Microsoft\Windows\PowerShell"
+
+$ScriptBlockKey = "$PolicyRoot\ScriptBlockLogging"
+$ModuleKey      = "$PolicyRoot\ModuleLogging"
+$ModuleNamesKey = "$ModuleKey\ModuleNames"
+$TranscriptKey  = "$PolicyRoot\Transcription"
+
+# ============================================================
+# SAFE REGISTRY FUNCTIONS
+# ============================================================
+
+function Read-RegistryValue {
+    param(
+        [string]$KeyPath,
+        [string]$ValueName
+    )
+
+    $Key = $null
+
+    try {
+        $Key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+            $KeyPath,
+            $false
+        )
+
+        if ($null -eq $Key) {
+            return [PSCustomObject]@{
+                Exists = $false
+                Value = $null
+                Status = "NOT SET"
+                Color = "Yellow"
+            }
+        }
+
+        # Check property existence BEFORE reading its value.
+        $ValueNames = @($Key.GetValueNames())
+
+        if ($ValueNames -notcontains $ValueName) {
+            return [PSCustomObject]@{
+                Exists = $false
+                Value = $null
+                Status = "NOT SET"
+                Color = "Yellow"
+            }
+        }
+
+        $Value = $Key.GetValue($ValueName)
+
+        if ($Value -eq 1) {
+            return [PSCustomObject]@{
+                Exists = $true
+                Value = $Value
+                Status = "1 (ENABLED)"
+                Color = "Green"
+            }
+        }
+
+        if ($Value -eq 0) {
+            return [PSCustomObject]@{
+                Exists = $true
+                Value = $Value
+                Status = "0 (DISABLED)"
+                Color = "Red"
+            }
+        }
+
+        return [PSCustomObject]@{
+            Exists = $true
+            Value = $Value
+            Status = "$Value (OTHER)"
+            Color = "Yellow"
+        }
+    }
+    catch {
+        return [PSCustomObject]@{
+            Exists = $false
+            Value = $null
+            Status = "READ ERROR"
+            Color = "Red"
+        }
+    }
+    finally {
+        if ($null -ne $Key) {
+            $Key.Close()
+        }
+    }
+}
+
+function Read-RegistryText {
+    param(
+        [string]$KeyPath,
+        [string]$ValueName
+    )
+
+    $Key = $null
+
+    try {
+        $Key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+            $KeyPath,
+            $false
+        )
+
+        if ($null -eq $Key) {
+            return "NOT SET"
+        }
+
+        if (@($Key.GetValueNames()) -notcontains $ValueName) {
+            return "NOT SET"
+        }
+
+        $Value = $Key.GetValue($ValueName)
+
+        if ([string]::IsNullOrWhiteSpace([string]$Value)) {
+            return "EMPTY"
+        }
+
+        return [string]$Value
+    }
+    catch {
+        return "READ ERROR"
+    }
+    finally {
+        if ($null -ne $Key) {
+            $Key.Close()
+        }
+    }
+}
+
+function Read-ModuleNames {
+    param([string]$KeyPath)
+
+    $Key = $null
+
+    try {
+        $Key = [Microsoft.Win32.Registry]::LocalMachine.OpenSubKey(
+            $KeyPath,
+            $false
+        )
+
+        if ($null -eq $Key) {
+            return "NOT CONFIGURED"
+        }
+
+        $Names = @(
+            foreach ($Name in $Key.GetValueNames()) {
+                $Value = $Key.GetValue($Name)
+
+                if (-not [string]::IsNullOrWhiteSpace([string]$Value)) {
+                    [string]$Value
+                }
+            }
+        )
+
+        if ($Names.Count -eq 0) {
+            return "NOT CONFIGURED"
+        }
+
+        return ($Names -join ", ")
+    }
+    catch {
+        return "READ ERROR"
+    }
+    finally {
+        if ($null -ne $Key) {
+            $Key.Close()
+        }
+    }
+}
+
+# ============================================================
+# DISPLAY FUNCTIONS
+# ============================================================
+
+function Get-StatusColor {
+    param([string]$Status)
+
+    switch ($Status) {
+        "ON"    { return "Green" }
+        "OK"    { return "Green" }
+        "OFF"   { return "Red" }
+        "ERROR" { return "Red" }
+        "CHECK" { return "Yellow" }
+        default { return "Gray" }
+    }
+}
+
+function Write-Cell {
+    param(
+        [string]$Text,
+        [int]$Width,
+        [string]$Color = "White",
+        [switch]$Right
+    )
+
+    if ($null -eq $Text) {
+        $Text = "N/A"
+    }
+
+    if ($Text.Length -gt $Width) {
+        $Text = $Text.Substring(0, $Width)
+    }
+
+    if ($Right) {
+        $Formatted = $Text.PadLeft($Width)
+    }
+    else {
+        $Formatted = $Text.PadRight($Width)
+    }
+
+    Write-Host $Formatted -ForegroundColor $Color -NoNewline
+    Write-Host "  " -NoNewline
+}
+
+function Write-RegistryStatus {
+    param(
+        [string]$Label,
+        [object]$Result
+    )
+
+    Write-Host ("  {0,-24}: " -f $Label) -NoNewline
+    Write-Host $Result.Status -ForegroundColor $Result.Color
+}
+
+function Get-ServiceState {
+    param([string]$ServiceName)
+
+    $Service = Get-Service -Name $ServiceName `
+        -ErrorAction SilentlyContinue
+
+    if ($Service -and $Service.Status -eq "Running") {
+        return "ON"
+    }
+
+    return "OFF"
+}
+
+function Get-LogFileSizeMB {
+    param([string]$LogName)
+
+    try {
+        $Output = & wevtutil.exe gl $LogName 2>$null
+
+        if ($LASTEXITCODE -ne 0) {
+            return $null
+        }
+
+        $Line = $Output |
+            Where-Object {
+                $_ -match '^\s*logFileName:\s*(.+)$'
+            } |
+            Select-Object -First 1
+
+        if (-not $Line) {
+            return $null
+        }
+
+        $Path = ($Line -replace '^\s*logFileName:\s*', '').Trim()
+        $Path = [Environment]::ExpandEnvironmentVariables($Path)
+
+        if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
+            return $null
+        }
+
+        $File = Get-Item -LiteralPath $Path `
+            -Force -ErrorAction SilentlyContinue
+
+        if ($null -eq $File) {
+            return $null
+        }
+
+        return [math]::Round($File.Length / 1MB, 2)
+    }
+    catch {
+        return $null
+    }
+}
+
+# ============================================================
+# READ POWERSHELL LOGGING POLICIES
+# ============================================================
+
+$ScriptBlock = Read-RegistryValue `
+    -KeyPath $ScriptBlockKey `
+    -ValueName "EnableScriptBlockLogging"
+
+$ModuleLogging = Read-RegistryValue `
+    -KeyPath $ModuleKey `
+    -ValueName "EnableModuleLogging"
+
+$Transcription = Read-RegistryValue `
+    -KeyPath $TranscriptKey `
+    -ValueName "EnableTranscripting"
+
+$InvocationHeader = Read-RegistryValue `
+    -KeyPath $TranscriptKey `
+    -ValueName "EnableInvocationHeader"
+
+$ModuleList = Read-ModuleNames `
+    -KeyPath $ModuleNamesKey
+
+$TranscriptOutput = Read-RegistryText `
+    -KeyPath $TranscriptKey `
+    -ValueName "OutputDirectory"
+
+$TranscriptFolderExists = "N/A"
+
+if ($TranscriptOutput -notin @(
+    "NOT SET",
+    "EMPTY",
+    "READ ERROR"
+)) {
+    $ExpandedPath = [Environment]::ExpandEnvironmentVariables(
+        $TranscriptOutput
+    )
+
+    if (Test-Path -LiteralPath $ExpandedPath -PathType Container) {
+        $TranscriptFolderExists = "YES"
+    }
+    else {
+        $TranscriptFolderExists = "NO"
+    }
+}
+
+# ============================================================
+# COLLECT EVENT LOG INFORMATION
+# ============================================================
+
+$Results = @(
+    foreach ($Item in $LogConfigs) {
+
+        if ($Item.Name -eq "PowerShell") {
+            $Feature = if ($ScriptBlock.Value -eq 1) {
+                "ON"
+            }
+            else {
+                "OFF"
+            }
+        }
+        else {
+            $Feature = Get-ServiceState $Item.Service
+        }
+
+        try {
+            $Log = Get-WinEvent `
+                -ListLog $Item.LogName `
+                -ErrorAction Stop
+
+            $MaxMB = [math]::Round(
+                $Log.MaximumSizeInBytes / 1MB, 2
+            )
+
+            $UsedMB = Get-LogFileSizeMB $Item.LogName
+
+            $Percent = $null
+
+            if ($null -ne $UsedMB -and $MaxMB -gt 0) {
+                $Percent = [math]::Round(
+                    ($UsedMB / $MaxMB) * 100,
+                    1
+                )
+            }
+
+            [PSCustomObject]@{
+                Source = $Item.Name
+                Log = if ($Log.IsEnabled) { "ON" } else { "OFF" }
+                Feature = $Feature
+                Records = $Log.RecordCount
+                UsedMB = $UsedMB
+                MaxMB = $MaxMB
+                Percent = $Percent
+                Size = if ($MaxMB -eq $Item.ExpectedMB) {
+                    "OK"
+                }
+                else {
+                    "CHECK"
+                }
+                Error = ""
+            }
+        }
+        catch {
+            [PSCustomObject]@{
+                Source = $Item.Name
+                Log = "ERROR"
+                Feature = $Feature
+                Records = $null
+                UsedMB = $null
+                MaxMB = $null
+                Percent = $null
+                Size = "CHECK"
+                Error = $_.Exception.Message
+            }
+        }
+    }
+)
+
+# ============================================================
+# DISPLAY TABLE - DO NOT CLEAR SCREEN
+# ============================================================
+
+$Width = 102
+
+Write-Host ""
+Write-Host "  DFIR LOGGING STATUS" -ForegroundColor Cyan
+
+Write-Host ("  Check Time: " +
+    (Get-Date -Format "yyyy-MM-dd HH:mm:ss")) `
+    -ForegroundColor Yellow
+
+Write-Host ("  " + ("=" * $Width)) -ForegroundColor DarkGray
+
+Write-Host "  " -NoNewline
+
+Write-Cell "SOURCE" 16 "Cyan"
+Write-Cell "LOG" 7 "Cyan"
+Write-Cell "FEATURE" 9 "Cyan"
+Write-Cell "RECORDS" 12 "Cyan" -Right
+Write-Cell "USED MB" 10 "Cyan" -Right
+Write-Cell "MAX MB" 10 "Cyan" -Right
+Write-Cell "USAGE" 8 "Cyan" -Right
+Write-Cell "SIZE" 6 "Cyan"
+
+Write-Host ""
+
+Write-Host ("  " + ("-" * $Width)) -ForegroundColor DarkGray
+
+foreach ($Row in $Results) {
+
+    $RecordText = if ($null -ne $Row.Records) {
+        "{0:N0}" -f $Row.Records
+    }
+    else {
+        "N/A"
+    }
+
+    $UsedText = if ($null -ne $Row.UsedMB) {
+        "{0:N2}" -f $Row.UsedMB
+    }
+    else {
+        "N/A"
+    }
+
+    $MaxText = if ($null -ne $Row.MaxMB) {
+        "{0:N0}" -f $Row.MaxMB
+    }
+    else {
+        "N/A"
+    }
+
+    $PercentText = if ($null -ne $Row.Percent) {
+        "{0:N1}%" -f $Row.Percent
+    }
+    else {
+        "N/A"
+    }
+
+    $UsageColor = "Gray"
+
+    if ($null -ne $Row.Percent) {
+        if ($Row.Percent -ge 90) {
+            $UsageColor = "Red"
+        }
+        elseif ($Row.Percent -ge 70) {
+            $UsageColor = "Yellow"
+        }
+        else {
+            $UsageColor = "Green"
+        }
+    }
+
+    Write-Host "  " -NoNewline
+
+    Write-Cell $Row.Source 16 "White"
+    Write-Cell $Row.Log 7 (Get-StatusColor $Row.Log)
+    Write-Cell $Row.Feature 9 (Get-StatusColor $Row.Feature)
+    Write-Cell $RecordText 12 "White" -Right
+    Write-Cell $UsedText 10 $UsageColor -Right
+    Write-Cell $MaxText 10 "White" -Right
+    Write-Cell $PercentText 8 $UsageColor -Right
+    Write-Cell $Row.Size 6 (Get-StatusColor $Row.Size)
+
+    Write-Host ""
+}
+
+Write-Host ("  " + ("=" * $Width)) -ForegroundColor DarkGray
+
+# ============================================================
+# POWERSHELL LOGGING REGISTRY
+# ============================================================
+
+Write-Host ""
+Write-Host "  POWERSHELL LOGGING REGISTRY" -ForegroundColor Cyan
+Write-Host ("  " + ("-" * 70)) -ForegroundColor DarkGray
+
+Write-RegistryStatus "Script Block Logging" $ScriptBlock
+Write-Host "  Registry Path           : HKLM:\$ScriptBlockKey"
+
+Write-Host ""
+
+Write-RegistryStatus "Module Logging" $ModuleLogging
+Write-Host "  Registry Path           : HKLM:\$ModuleKey"
+Write-Host "  Module Names            : $ModuleList"
+
+Write-Host ""
+
+Write-RegistryStatus "Transcription Logging" $Transcription
+Write-RegistryStatus "Invocation Header" $InvocationHeader
+Write-Host "  Registry Path           : HKLM:\$TranscriptKey"
+Write-Host "  Output Directory        : $TranscriptOutput"
+
+Write-Host "  Output Folder Exists    : " -NoNewline
+
+switch ($TranscriptFolderExists) {
+    "YES" {
+        Write-Host "YES" -ForegroundColor Green
+    }
+    "NO" {
+        Write-Host "NO" -ForegroundColor Yellow
+    }
+    default {
+        Write-Host "N/A" -ForegroundColor Gray
+    }
+}
+
+# ============================================================
+# LOG QUERY ERRORS
+# ============================================================
+
+$ErrorsFound = @($Results | Where-Object { $_.Error })
+
+if ($ErrorsFound.Count -gt 0) {
+
+    Write-Host ""
+    Write-Host "  LOG QUERY ERRORS" -ForegroundColor Red
+
+    foreach ($Item in $ErrorsFound) {
+        Write-Host "  $($Item.Source): $($Item.Error)" `
+            -ForegroundColor Yellow
+    }
+}
+
+# ============================================================
+# LEGEND
+# ============================================================
+
+Write-Host ""
+Write-Host "  ON / OK  " -ForegroundColor Green -NoNewline
+Write-Host "= Enabled / Correct configuration"
+
+Write-Host "  OFF      " -ForegroundColor Red -NoNewline
+Write-Host "= Disabled"
+
+Write-Host "  CHECK    " -ForegroundColor Yellow -NoNewline
+Write-Host "= Maximum size differs from expected"
+
+Write-Host ""
+Write-Host "  FEATURE: Sysmon64 / Script Block Logging / Winmgmt / Schedule"
+Write-Host "  USED MB: Physical EVTX file size"
+Write-Host "  USAGE: Physical EVTX size / configured maximum"
+Write-Host "  NOTE: Transcription output is separate from EVTX."
+Write-Host ""
+
+```
+ -->
+
+<!-- 
 ```ps1
 # ==============================================================================
 # SCRIPT CHI HIEN THI TRANG THAI LOG (READ-ONLY)
@@ -1040,6 +1780,7 @@ Write-Host "--------------------------------------------------" -ForegroundColor
 Write-Host " ScriptBlockLogging Registry Value : $sblValue" -ForegroundColor Yellow
 Write-Host "==================================================" -ForegroundColor Cyan
 ```
+ -->
 
 </details>
 
@@ -1220,6 +1961,106 @@ notepad C:\on.ps1
 
 <details>
 <summary>Bấm vào đây để xem nội dung</summary>
+
+```ps1
+# ==============================================================================
+# SCRIPT BAT LAI TOAN BO LOG & TINH NANG GIAM SAT (DANH CHO LAB)
+# ==============================================================================
+
+Write-Host "Dang tien hanh bat lai cac log va tinh nang giam sat..." -ForegroundColor Cyan
+
+# 1. PowerShell (Log Channel & Script Block)
+wevtutil sl "Microsoft-Windows-PowerShell/Operational" /e:true | Out-Null
+$sblPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging"
+if (-not (Test-Path $sblPath)) { New-Item -Path $sblPath -Force | Out-Null }
+Set-ItemProperty -Path $sblPath -Name "EnableScriptBlockLogging" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+
+# 2. PowerShell (Module Logging - Event 4103)
+$modPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging"
+if (-not (Test-Path $modPath)) { New-Item -Path $modPath -Force | Out-Null }
+Set-ItemProperty -Path $modPath -Name "EnableModuleLogging" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+
+# 3. PowerShell (Transcription - Ghi file text)
+$traPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription"
+if (-not (Test-Path $traPath)) { New-Item -Path $traPath -Force | Out-Null }
+Set-ItemProperty -Path $traPath -Name "EnableTranscripting" -Value 1 -Type DWord -ErrorAction SilentlyContinue
+
+# 4. Task Scheduler
+wevtutil sl "Microsoft-Windows-TaskScheduler/Operational" /e:true | Out-Null
+
+# 5. Sysmon
+wevtutil sl "Microsoft-Windows-Sysmon/Operational" /e:true | Out-Null
+
+# 6. WMI Activity
+wevtutil sl "Microsoft-Windows-WMI-Activity/Operational" /e:true | Out-Null
+
+Write-Host "Hoan tat! Dang quet lai trang thai de kiem tra...`n" -ForegroundColor Green
+
+# ==============================================================================
+# LAY THONG TIN TRANG THAI THUC TE SAU KHI CHAY
+# ==============================================================================
+
+$results = @()
+
+# 1. PowerShell Log
+$psLog = Get-WinEvent -ListLog "Microsoft-Windows-PowerShell/Operational" -ErrorAction SilentlyContinue
+$results += [PSCustomObject]@{
+    LogName     = "PowerShell/Operational"
+    IsEnabled   = $psLog.IsEnabled
+    RecordCount = $psLog.RecordCount
+}
+
+# 2. Task Scheduler Log
+$tsLog = Get-WinEvent -ListLog "Microsoft-Windows-TaskScheduler/Operational" -ErrorAction SilentlyContinue
+$results += [PSCustomObject]@{
+    LogName     = "TaskScheduler/Operational"
+    IsEnabled   = $tsLog.IsEnabled
+    RecordCount = $tsLog.RecordCount
+}
+
+# 3. Sysmon Log
+$sysLog = Get-WinEvent -ListLog "Microsoft-Windows-Sysmon/Operational" -ErrorAction SilentlyContinue
+$results += [PSCustomObject]@{
+    LogName     = "Sysmon/Operational"
+    IsEnabled   = $sysLog.IsEnabled
+    RecordCount = $sysLog.RecordCount
+}
+
+# 4. WMI Activity Log
+$wmiLog = Get-WinEvent -ListLog "Microsoft-Windows-WMI-Activity/Operational" -ErrorAction SilentlyContinue
+$results += [PSCustomObject]@{
+    LogName     = "WMI-Activity/Operational"
+    IsEnabled   = $wmiLog.IsEnabled
+    RecordCount = $wmiLog.RecordCount
+}
+
+# 5. Lay gia tri Registry cua 3 tinh nang PowerShell
+$sblReg = Get-ItemProperty -Path $sblPath -ErrorAction SilentlyContinue
+$modReg = Get-ItemProperty -Path $modPath -ErrorAction SilentlyContinue
+$traReg = Get-ItemProperty -Path $traPath -ErrorAction SilentlyContinue
+
+$sblValue = if ($null -ne $sblReg.EnableScriptBlockLogging) { $sblReg.EnableScriptBlockLogging } else { "N/A" }
+$modValue = if ($null -ne $modReg.EnableModuleLogging) { $modReg.EnableModuleLogging } else { "N/A" }
+$traValue = if ($null -ne $traReg.EnableTranscripting) { $traReg.EnableTranscripting } else { "N/A" }
+
+# ==============================================================================
+# HIEN THI KET QUA RA MAN HINH CONSOLE
+# ==============================================================================
+
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host "        KET QUA KIEM TRA TRANG THAI LOG           " -ForegroundColor Cyan
+Write-Host "==================================================" -ForegroundColor Cyan
+Write-Host ""
+
+$results | Format-Table -AutoSize
+
+Write-Host ""
+Write-Host "--------------------------------------------------" -ForegroundColor Cyan
+Write-Host " ScriptBlockLogging Registry Value : $sblValue" -ForegroundColor Yellow
+Write-Host " ModuleLogging Registry Value      : $modValue" -ForegroundColor Yellow
+Write-Host " Transcription Registry Value      : $traValue" -ForegroundColor Yellow
+Write-Host "==================================================" -ForegroundColor Cyan
+```
 
 ```ps1
 # ==============================================================================
@@ -1907,3 +2748,4 @@ notepad C:\export_wmi.ps1
 Set-ExecutionPolicy Bypass -Scope Process -Force 
 & "C:\on.ps1"
 ```
+

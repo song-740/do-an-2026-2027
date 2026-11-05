@@ -1,0 +1,30 @@
+Cách chạy KAPE trên máy ảo
+Bước 1: Tải KAPE
+Tải KAPE từ trang chính thức của Eric Zimmerman (thường là file KAPE.zip). Giải nén vào một thư mục, ví dụ C:\Tools\KAPE.
+
+Bước 2: Cập nhật Targets/Modules (nếu cần)
+Lần đầu chạy, bạn có thể cần đồng bộ các target/module mới nhất từ repo GitHub của KAPE. Chạy lệnh sau trong Command Prompt (Admin) tại thư mục KAPE :
+
+cmd
+kape.exe --sync
+Bước 3: Chạy thu thập + parse trong một lần
+
+Đây là lệnh "all-in-one" — vừa thu thập vừa parse, phù hợp cho demo:
+
+cmd
+kape.exe --tsource C: --target !SANS_Triage --tdest C:\Tools\KAPE\out\target --mdest C:\Tools\KAPE\out\parsed --module !EZParser --tflush --mflush
+Giải thích các tham số :
+
+--tsource C: : Nguồn cần thu thập (ổ C của máy ảo).
+
+--target !SANS_Triage : Target thu thập các artifact quan trọng (Registry, Event Log, Prefetch, $MFT, WMI...). Bạn có thể dùng KapeTriage nếu muốn.
+
+--tdest ... : Thư mục chứa file thô sau khi thu thập.
+
+--mdest ... : Thư mục chứa file CSV sau khi parse.
+
+--module !EZParser : Module tự động chạy các tool parse (EvtxECmd, MFTECmd, PECmd...) và xuất ra CSV.
+
+--tflush và --mflush : Xóa sạch thư mục đích trước khi chạy (tránh lẫn dữ liệu cũ).
+
+Lưu ý: Nếu KAPE báo thiếu binary (ví dụ EvtxECmd.exe), bạn cần tải các tool của Eric Zimmerman (EZ Tools) và đặt vào thư mục bin của KAPE, hoặc chạy lệnh --mlist và --mdetail để xem hướng dẫn tải .

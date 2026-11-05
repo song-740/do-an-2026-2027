@@ -1,0 +1,1140 @@
+# ============================================================
+# FORENSIC EVIDENCE COLLECTION SCRIPT - v2
+# Mục đích: Thu thập toàn diện, khách quan, không nhắm target
+# Nguyên tắc: RFC 3227 (volatile first), chain of custody, verify tool
+# Chạy: powershell -ExecutionPolicy Bypass -File collect_evidence.ps1
+# Yêu cầu: Chạy bằng Administrator để thu thập đầy đủ artifact
+# ============================================================
+
+#Requires -Version 5.1
+
+# ============================================================
+# KHỞI TẠO
+# ============================================================
+$ErrorActionPreference = 'Continue'
+$ScriptRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
+$ToolsDir   = Join-Path $ScriptRoot "tools"
+$CaseID     = "CASE_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+$OutRoot    = Join-Path $ScriptRoot "evidence\$CaseID"
+$StartTime  = Get-Date
+
+# Kiểm tra admin
+$IsAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+# Tạo cấu trúc thư mục
+$dirs = @(
+    '00_meta','01_volatile','02_network','03_processes','04_services',
+    '05_tasks','06_users','07_drivers','08_eventlogs','09_registry',
+    '10_wmi','11_prefetch','12_filesystem\ntfs_meta','13_startup',
+    '14_handles','15_misc','16_anti_forensic'
+)
+foreach ($d in $dirs) {
+    New-Item -ItemType Directory -Path "$OutRoot\$d" -Force | Out-Null
+}
+
+# ============================================================
+# HÀM TIỆN ÍCH
+# ============================================================
+function Log {
+    param([string]$msg, [string]$level = 'INFO')
+    $ts = Get-Date -Format "HH:mm:ss.fff"
+    $line = "[$ts][$level] $msg"
+    $color = switch ($level) {
+        'ERROR' { 'Red' }
+        'WARN'  { 'Yellow' }
+        'OK'    { 'Green' }
+        default { 'Cyan' }
+    }
+    Write-Host $line -ForegroundColor $color
+    $line | Out-File "$OutRoot\_collection.log" -Append -Encoding UTF8
+}
+
+function Timed {
+    param([string]$Name, [scriptblock]$Block)
+    $t0 = Get-Date
+    Log "=== $Name ==="
+    try {
+        & $Block
+        $status = 'OK'
+    } catch {
+        Log "  [$Name] EXCEPTION: $($_.Exception.Message)" 'ERROR'
+        $status = "FAIL: $($_.Exception.Message)"
+    }
+    $t1 = Get-Date
+    $dur = [Math]::Round(($t1 - $t0).TotalSeconds, 2)
+    "[$Name] $($t0.ToString('HH:mm:ss.fff')) -> $($t1.ToString('HH:mm:ss.fff')) | ${dur}s | $status" |
+        Out-File "$OutRoot\00_meta\_timing.txt" -Append -Encoding UTF8
+    Log "  -> $Name done in ${dur}s ($status)" $(if ($status -eq 'OK') {'OK'} else {'ERROR'})
+}
+
+function SafeCmd {
+    param([string]$Cmd, [string]$OutFile)
+    try {
+        $output = & cmd.exe /c $Cmd 2>&1
+        $output | Out-File $OutFile -Encoding UTF8
+    } catch {
+        "ERROR: $($_.Exception.Message)" | Out-File $OutFile -Encoding UTF8
+    }
+}
+
+function Copy-LockedFile {
+    # Fallback chain: RawCopy -> VSS -> robocopy
+    param([string]$Source, [string]$DestDir)
+    $dest = Join-Path $DestDir (Split-Path $Source -Leaf)
+    
+    # 1. RawCopy
+    $rc = Join-Path $ToolsDir "RawCopy64.exe"
+    if (Test-Path $rc) {
+        & $rc /FileNamePath:$Source /OutputPath:$DestDir 2>&1 | Out-Null
+        if (Test-Path $dest) { return $true }
+    }
+    
+    # 2. robocopy /B (backup mode, cần SeBackupPrivilege)
+    robocopy (Split-Path $Source) $DestDir (Split-Path $Source -Leaf) /B /R:0 /W:0 /NJH /NJS 2>&1 | Out-Null
+    if (Test-Path $dest) { return $true }
+    
+    # 3. Copy-Item (chỉ work nếu file không lock)
+    try { Copy-Item $Source $DestDir -Force -EA Stop; return $true } catch {}
+    
+    return $false
+}
+
+function Get-FileMetadataHash {
+    param([string]$Path)
+    try {
+        $h = (Get-FileHash $Path -Algorithm SHA256 -EA Stop).Hash
+        return $h
+    } catch {
+        return "ERROR: $($_.Exception.Message)"
+    }
+}
+
+# ============================================================
+# BƯỚC 1: METADATA (anchor cho timeline)
+# ============================================================
+Timed "01_metadata" {
+    $m = "$OutRoot\00_meta"
+    
+    # Thời gian — anchor cho toàn bộ timeline
+    @(
+        "Case ID       : $CaseID"
+        "Collection start : $($StartTime.ToString('yyyy-MM-dd HH:mm:ss.fff zzz'))"
+        "UTC Time      : $([DateTime]::UtcNow.ToString('yyyy-MM-dd HH:mm:ss.fff'))"
+        "Hostname      : $env:COMPUTERNAME"
+        "User          : $env:USERNAME"
+        "Is Admin      : $IsAdmin"
+        "Script root   : $ScriptRoot"
+        "PS Version    : $($PSVersionTable.PSVersion)"
+        "OS            : $([Environment]::OSVersion.VersionString)"
+        "Architecture  : $env:PROCESSOR_ARCHITECTURE"
+    ) | Out-File "$m\case_info.txt" -Encoding UTF8
+    
+    SafeCmd "w32tm /query /status" "$m\time_sync.txt"
+    [System.TimeZoneInfo]::Local | Out-File "$m\timezone.txt" -Encoding UTF8
+    
+    # System info
+    Get-ComputerInfo -EA SilentlyContinue | Out-File "$m\sysinfo.txt" -Encoding UTF8
+    systeminfo 2>&1 | Out-File "$m\systeminfo_raw.txt" -Encoding UTF8
+    Get-CimInstance Win32_OperatingSystem -EA SilentlyContinue |
+        Select-Object * | Out-File "$m\os.txt" -Encoding UTF8
+    Get-CimInstance Win32_ComputerSystem -EA SilentlyContinue |
+        Select-Object * | Out-File "$m\hardware.txt" -Encoding UTF8
+    
+    # User/privilege
+    whoami /all 2>&1 | Out-File "$m\whoami_all.txt" -Encoding UTF8
+    whoami /priv 2>&1 | Out-File "$m\whoami_priv.txt" -Encoding UTF8
+    whoami /groups 2>&1 | Out-File "$m\whoami_groups.txt" -Encoding UTF8
+    
+    # Verify tool signatures — quan trọng để chứng minh tool không bị thay
+    $toolReport = @()
+    Get-ChildItem $ToolsDir -File -EA SilentlyContinue | ForEach-Object {
+        $sig = Get-AuthenticodeSignature $_.FullName -EA SilentlyContinue
+        $hash = Get-FileMetadataHash $_.FullName
+        $toolReport += [PSCustomObject]@{
+            Name      = $_.Name
+            SHA256    = $hash
+            Signature = if ($sig) { $sig.Status } else { 'N/A' }
+            Signer    = if ($sig) { $sig.SignerCertificate.Subject } else { 'N/A' }
+        }
+    }
+    $toolReport | Format-List | Out-File "$m\tool_integrity.txt" -Encoding UTF8
+    
+    # Disable last access check (ảnh hưởng đến hash executable)
+    SafeCmd "fsutil behavior query disablelastaccess" "$m\ntfs_lastaccess_config.txt"
+}
+
+# ============================================================
+# BƯỚC 2: RAM DUMP (BLOCKING — bắt buộc trước mọi thứ khác)
+# ============================================================
+Timed "02_ram_dump_BLOCKING" {
+    $wmem = Join-Path $ToolsDir "winpmem_mini_x64.exe"
+    if (-not (Test-Path $wmem)) {
+        Log "  [!] winpmem_mini_x64.exe không tìm thấy — BỎ QUA RAM DUMP" 'WARN'
+        "MISSING: winpmem_mini_x64.exe" | Out-File "$OutRoot\01_volatile\_ram_dump_status.txt" -Encoding UTF8
+        return
+    }
+    
+    $ramOut = "$OutRoot\01_volatile\memory.raw"
+    Log "  RAM dump starting (BLOCKING) — có thể mất 5-30 phút..."
+    
+    # Blocking, chờ dump xong
+    $proc = Start-Process $wmem -ArgumentList $ramOut -PassThru -WindowStyle Hidden -Wait
+    
+    if (Test-Path $ramOut) {
+        $size = (Get-Item $ramOut).Length
+        $hash = Get-FileMetadataHash $ramOut
+        @(
+            "RAM dump status: SUCCESS"
+            "Path: $ramOut"
+            "Size bytes: $size"
+            "Size GB: $([Math]::Round($size/1GB, 3))"
+            "SHA256: $hash"
+            "Start: $($StartTime.ToString('yyyy-MM-dd HH:mm:ss'))"
+            "End: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        ) | Out-File "$OutRoot\01_volatile\_ram_dump_status.txt" -Encoding UTF8
+        Log "  RAM dump OK: $([Math]::Round($size/1GB,2)) GB, SHA256=$($hash.Substring(0,16))..." 'OK'
+    } else {
+        "FAILED: file not created" | Out-File "$OutRoot\01_volatile\_ram_dump_status.txt" -Encoding UTF8
+        Log "  RAM dump FAILED" 'ERROR'
+    }
+    
+    # Pagefile / hiberfil / swapfile — chứa memory cũ
+    foreach ($f in @('C:\pagefile.sys','C:\hiberfil.sys','C:\swapfile.sys')) {
+        if (Test-Path $f) {
+            Log "  Copying $f..."
+            Copy-LockedFile -Source $f -DestDir "$OutRoot\01_volatile" | Out-Null
+        }
+    }
+}
+
+# ============================================================
+# BƯỚC 3: NETWORK STATE
+# ============================================================
+Timed "03_network" {
+    $n = "$OutRoot\02_network"
+    
+    # Dùng netstat trước (nhanh, không phụ thuộc .NET)
+    SafeCmd "netstat -anob" "$n\netstat_anob.txt"
+    SafeCmd "netstat -ano" "$n\netstat_ano.txt"
+    SafeCmd "netstat -r" "$n\routing_table.txt"
+    SafeCmd "ipconfig /displaydns" "$n\dns_cache.txt"
+    SafeCmd "ipconfig /all" "$n\ipconfig.txt"
+    SafeCmd "arp -a" "$n\arp_cache.txt"
+    SafeCmd "net share" "$n\shares_cmd.txt"
+    
+    Get-NetAdapter -EA SilentlyContinue | Select-Object * |
+        Out-File "$n\net_adapters.txt" -Encoding UTF8
+    Get-NetTCPConnection -EA SilentlyContinue | Sort-Object State,LocalPort |
+        Out-File "$n\tcp_connections.txt" -Encoding UTF8
+    Get-NetUDPEndpoint -EA SilentlyContinue | Sort-Object LocalPort |
+        Out-File "$n\udp_endpoints.txt" -Encoding UTF8
+    Get-NetFirewallRule -EA SilentlyContinue |
+        Out-File "$n\firewall_rules.txt" -Encoding UTF8
+    netsh advfirewall show allprofiles 2>&1 |
+        Out-File "$n\firewall_profiles.txt" -Encoding UTF8
+    
+    Get-SmbSession -EA SilentlyContinue | Out-File "$n\smb_sessions.txt" -Encoding UTF8
+    Get-SmbShare -EA SilentlyContinue   | Out-File "$n\smb_shares.txt" -Encoding UTF8
+    Get-SmbOpenFile -EA SilentlyContinue | Out-File "$n\smb_open_files.txt" -Encoding UTF8
+}
+
+# ============================================================
+# BƯỚC 4: PROCESSES
+# ============================================================
+Timed "04_processes" {
+    $p = "$OutRoot\03_processes"
+    
+    # Chi tiết process với company, start time
+    Get-Process -EA SilentlyContinue | Select-Object `
+        Id, ProcessName, StartTime, Company, Description, Path,
+        @{N='CPU';E={$_.CPU}},
+        @{N='WS_MB';E={[Math]::Round($_.WorkingSet64/1MB,2)}},
+        @{N='SessionId';E={$_.SessionId}} |
+        Sort-Object StartTime | Out-File "$p\process_details.txt" -Encoding UTF8
+    
+    # WMI process với command line, owner, parent
+    Get-CimInstance Win32_Process -EA SilentlyContinue | ForEach-Object {
+        $owner = try { $_.GetOwner().User } catch { 'N/A' }
+        [PSCustomObject]@{
+            PID         = $_.ProcessId
+            PPID        = $_.ParentProcessId
+            Name        = $_.Name
+            CommandLine = $_.CommandLine
+            ExecutablePath = $_.ExecutablePath
+            CreationDate = $_.CreationDate
+            Owner       = $owner
+            SessionId   = $_.SessionId
+        }
+    } | Sort-Object PID | Export-Csv "$p\process_list_full.csv" -NoTypeInformation -Encoding UTF8
+    
+    # Process tree
+    Get-CimInstance Win32_Process -EA SilentlyContinue |
+        Select-Object @{N='PID';E={$_.ProcessId}},
+                      @{N='PPID';E={$_.ParentProcessId}},
+                      @{N='Name';E={$_.Name}},
+                      @{N='CMD';E={$_.CommandLine}},
+                      @{N='Path';E={$_.ExecutablePath}} |
+        Sort-Object PPID,PID | Format-Table -AutoSize -Wrap |
+        Out-File "$p\process_tree.txt" -Encoding UTF8
+    
+    SafeCmd "tasklist /v" "$p\tasklist_verbose.txt"
+    SafeCmd "tasklist /svc" "$p\tasklist_services.txt"
+    
+    # Hash executable đang chạy — ghi rõ exception nếu có
+    Get-CimInstance Win32_Process -EA SilentlyContinue |
+        Where-Object { $_.ExecutablePath } | ForEach-Object {
+            $h = try { (Get-FileHash $_.ExecutablePath -Algorithm SHA256 -EA Stop).Hash }
+                 catch { "ERROR: $($_.Exception.Message)" }
+            "$($_.ProcessId) | $($_.Name) | $h | $($_.ExecutablePath)"
+        } | Out-File "$p\process_hashes.txt" -Encoding UTF8
+    
+    # ListDLLs
+    $lldll = Join-Path $ToolsDir "Listdlls64.exe"
+    if (Test-Path $lldll) {
+        & $lldll -accepteula 2>&1 | Out-File "$p\loaded_dlls_all.txt" -Encoding UTF8
+    }
+}
+
+# ============================================================
+# BƯỚC 5: HANDLES
+# ============================================================
+Timed "05_handles" {
+    $hnd = Join-Path $ToolsDir "handle64.exe"
+    if (Test-Path $hnd) {
+        # handle64 -a rất chậm, set timeout 10 phút
+        Log "  handle64 -a (có thể mất 5-10 phút)..."
+        $outFile = "$OutRoot\14_handles\handles_all.txt"
+        $proc = Start-Process $hnd -ArgumentList "-accepteula","-a" -PassThru -WindowStyle Hidden -RedirectStandardOutput $outFile
+        if (-not $proc.WaitForExit(600000)) {
+            $proc.Kill()
+            "TIMEOUT after 10 min" | Out-File $outFile -Append
+        }
+    } else {
+        "MISSING: handle64.exe" | Out-File "$OutRoot\14_handles\_status.txt" -Encoding UTF8
+    }
+}
+
+# ============================================================
+# BƯỚC 6: SERVICES + DRIVERS
+# ============================================================
+Timed "06_services" {
+    $s = "$OutRoot\04_services"
+    $d = "$OutRoot\07_drivers"
+    
+    Get-Service -EA SilentlyContinue | Select-Object * |
+        Out-File "$s\services_all.txt" -Encoding UTF8
+    Get-CimInstance Win32_Service -EA SilentlyContinue |
+        Select-Object Name, DisplayName, State, StartMode, PathName, StartName, Description |
+        Sort-Object Name | Export-Csv "$s\services_wmi.csv" -NoTypeInformation -Encoding UTF8
+    SafeCmd "sc query type= all state= all" "$s\sc_query.txt"
+    
+    Get-CimInstance Win32_SystemDriver -EA SilentlyContinue |
+        Select-Object Name, DisplayName, PathName, State, StartMode |
+        Sort-Object Name | Export-Csv "$d\drivers.csv" -NoTypeInformation -Encoding UTF8
+    SafeCmd "driverquery /v" "$d\driverquery.txt"
+}
+
+# ============================================================
+# BƯỚC 7: SCHEDULED TASKS
+# ============================================================
+Timed "07_tasks" {
+    $t = "$OutRoot\05_tasks"
+    
+    SafeCmd "schtasks /query /fo LIST /v" "$t\schtasks_list_verbose.txt"
+    
+    Get-ScheduledTask -EA SilentlyContinue | ForEach-Object {
+        $acts = ($_.Actions | ForEach-Object { "$($_.Execute) $($_.Arguments)" }) -join ' | '
+        [PSCustomObject]@{
+            TaskName = $_.TaskName
+            TaskPath = $_.TaskPath
+            State    = $_.State
+            Author   = $_.Author
+            UserId   = $_.Principal.UserId
+            RunLevel = $_.Principal.RunLevel
+            Triggers = ($_.Triggers | Out-String).Trim()
+            Actions  = $acts
+        }
+    } | Export-Csv "$t\scheduled_tasks.csv" -NoTypeInformation -Encoding UTF8
+    
+    # Raw XML definitions
+    $xmlDir = "$t\xml_definitions"
+    New-Item -ItemType Directory -Path $xmlDir -Force | Out-Null
+    Get-ScheduledTask -EA SilentlyContinue | ForEach-Object {
+        $safe = ($_.TaskPath + $_.TaskName) -replace '[\\/:*?"<>|]', '_'
+        try {
+            Export-ScheduledTask -TaskName $_.TaskName -TaskPath $_.TaskPath -EA Stop |
+                Out-File "$xmlDir\$safe.xml" -Encoding UTF8
+        } catch {
+            "ERROR: $($_.Exception.Message)" | Out-File "$xmlDir\$safe.error.txt" -Encoding UTF8
+        }
+    }
+    
+    # TaskCache registry
+    reg export "HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Schedule\TaskCache" `
+        "$t\TaskCache.reg" /y 2>&1 | Out-Null
+}
+
+# ============================================================
+# BƯỚC 8: USERS & SESSIONS
+# ============================================================
+Timed "08_users" {
+    $u = "$OutRoot\06_users"
+    
+    SafeCmd "query user" "$u\logged_on_users.txt"
+    SafeCmd "query session" "$u\sessions.txt"
+    SafeCmd "net user" "$u\local_users.txt"
+    SafeCmd "net localgroup" "$u\local_groups.txt"
+    SafeCmd "net localgroup administrators" "$u\admin_group.txt"
+    
+    Get-LocalUser -EA SilentlyContinue | Select-Object * |
+        Out-File "$u\local_users_detail.txt" -Encoding UTF8
+    Get-LocalGroup -EA SilentlyContinue | Select-Object * |
+        Out-File "$u\local_groups_detail.txt" -Encoding UTF8
+    
+    # PowerShell history của TẤT CẢ user
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $hist = Join-Path $_.FullName "AppData\Roaming\Microsoft\Windows\PowerShell\PSReadLine\ConsoleHost_history.txt"
+        if (Test-Path $hist) {
+            Copy-Item $hist "$u\ps_history_$($_.Name).txt" -Force -EA SilentlyContinue
+        }
+    }
+    
+    # Recent LNK
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $recent = Join-Path $_.FullName "AppData\Roaming\Microsoft\Windows\Recent"
+        if (Test-Path $recent) {
+            $dest = "$u\recent_$($_.Name)"
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Copy-Item "$recent\*" $dest -Force -EA SilentlyContinue
+        }
+    }
+}
+
+# ============================================================
+# BƯỚC 9: EVENT LOGS
+# ============================================================
+Timed "09_eventlogs" {
+    $e = "$OutRoot\08_eventlogs"
+    
+    $channels = Get-WinEvent -ListLog * -EA SilentlyContinue
+    Log "  Total channels: $($channels.Count)"
+    
+    # Inventory
+    $channels | Select-Object LogName, RecordCount, LogMode, MaximumSizeInBytes,
+        IsEnabled, LogFilePath, FileSize, LastWriteTime, LastAccessTime |
+        Sort-Object LogName | Export-Csv "$e\channel_inventory.csv" -NoTypeInformation -Encoding UTF8
+    
+    # Export từng channel + metadata riêng
+    $emptyReport = @()
+    foreach ($ch in $channels) {
+        $logName = $ch.LogName
+        $safe = $logName -replace '[\\/:*?"<>|]', '_'
+        
+        if ($ch.RecordCount -gt 0) {
+            $evtx = "$e\$safe.evtx"
+            wevtutil epl "$logName" "$evtx" 2>&1 | Out-Null
+        }
+        
+        # Channel rỗng / disabled — vẫn là bằng chứng
+        if ($ch.RecordCount -eq 0 -or -not $ch.IsEnabled) {
+            $meta = wevtutil gl "$logName" 2>&1 | Out-String
+            $emptyReport += [PSCustomObject]@{
+                LogName      = $logName
+                RecordCount  = $ch.RecordCount
+                IsEnabled    = $ch.IsEnabled
+                FileSize     = $ch.FileSize
+                LastWrite    = $ch.LastWriteTime
+                Metadata     = $meta
+            }
+        }
+    }
+    $emptyReport | Export-Csv "$e\_empty_or_disabled_channels.csv" -NoTypeInformation -Encoding UTF8
+    
+    # Security events quan trọng — đặc biệt 1102 (log cleared)
+    $secIds = @(1102, 4624, 4625, 4648, 4672, 4688, 4698, 4699, 4700, 4702)
+    foreach ($id in $secIds) {
+        try {
+            Get-WinEvent -FilterHashtable @{LogName='Security'; Id=$id} -MaxEvents 2000 -EA Stop |
+                Select-Object TimeCreated, Id, ProviderName, Message |
+                Out-File "$e\security_id_$id.txt" -Encoding UTF8
+        } catch {}
+    }
+    
+    # Sysmon events quan trọng
+    $sysmonIds = @(1,3,7,8,10,11,12,13,14,17,18,19,20,21,22,23,25)
+    foreach ($id in $sysmonIds) {
+        try {
+            Get-WinEvent -FilterHashtable @{LogName='Microsoft-Windows-Sysmon/Operational'; Id=$id} -MaxEvents 5000 -EA Stop |
+                Select-Object TimeCreated, Id, Message |
+                Out-File "$e\sysmon_id_$id.txt" -Encoding UTF8
+        } catch {}
+    }
+}
+
+# ============================================================
+# BƯỚC 10: REGISTRY HIVES
+# ============================================================
+Timed "10_registry" {
+    $r = "$OutRoot\09_registry"
+    $raw = "$r\raw_hives"
+    New-Item -ItemType Directory -Path $raw -Force | Out-Null
+    
+    # reg export (text) — ghi rõ lỗi
+    $hives = @(
+        @{Name='HKLM_SOFTWARE'; Path='HKLM\SOFTWARE'}
+        @{Name='HKLM_SYSTEM';   Path='HKLM\SYSTEM'}
+        @{Name='HKLM_SECURITY'; Path='HKLM\SECURITY'}
+        @{Name='HKLM_SAM';      Path='HKLM\SAM'}
+        @{Name='HKCU_ALL';      Path='HKCU'}
+    )
+    foreach ($h in $hives) {
+        reg export $h.Path "$r\$($h.Name).reg" /y 2>&1 | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            "FAILED (exit $LASTEXITCODE): $($h.Path)" | Out-File "$r\_export_errors.txt" -Append
+        }
+    }
+    
+    # Raw hives
+    $rawHives = @(
+        "$env:SystemRoot\System32\config\SAM"
+        "$env:SystemRoot\System32\config\SYSTEM"
+        "$env:SystemRoot\System32\config\SOFTWARE"
+        "$env:SystemRoot\System32\config\SECURITY"
+        "$env:SystemRoot\System32\config\DEFAULT"
+    )
+    foreach ($hv in $rawHives) {
+        Copy-LockedFile -Source $hv -DestDir $raw | Out-Null
+    }
+    
+    # NTUSER.DAT + UsrClass.dat cho TẤT CẢ user
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $uname = $_.Name
+        $ntu = Join-Path $_.FullName "NTUSER.DAT"
+        $cls = Join-Path $_.FullName "AppData\Local\Microsoft\Windows\UsrClass.dat"
+        
+        if (Test-Path $ntu) {
+            $ok = Copy-LockedFile -Source $ntu -DestDir $raw
+            if (-not $ok) {
+                # Fallback reg load/export
+                $key = "HKU\TempHive_$uname"
+                reg load $key $ntu 2>&1 | Out-Null
+                if ($LASTEXITCODE -eq 0) {
+                    reg export $key "$raw\NTUSER_$uname.reg" /y 2>&1 | Out-Null
+                    reg unload $key 2>&1 | Out-Null
+                }
+            }
+        }
+        if (Test-Path $cls) {
+            Copy-LockedFile -Source $cls -DestDir $raw | Out-Null
+        }
+    }
+    
+    # Query toàn bộ subtree các vị trí hay bị lợi dụng
+    $queries = @(
+        'HKCU\Software\Classes'
+        'HKLM\SOFTWARE\Classes'
+        'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+        'HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+        'HKLM\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Run'
+        'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run'
+        'HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\RunOnce'
+        'HKLM\SYSTEM\CurrentControlSet\Services'
+        'HKLM\SOFTWARE\Policies'
+        'HKCU\SOFTWARE\Policies'
+        'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
+        'HKLM\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Winlogon'
+        'HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\Environment'
+        'HKCU\Environment'
+        'HKLM\SOFTWARE\Microsoft\Windows Defender'
+        'HKLM\SOFTWARE\Microsoft\AMSI'
+    )
+    foreach ($q in $queries) {
+        $safe = $q -replace '[\\/:*?"<>|]', '_'
+        reg query $q /s 2>&1 | Out-File "$r\query_$safe.txt" -Encoding UTF8
+    }
+}
+
+# ============================================================
+# BƯỚC 11: WMI REPOSITORY
+# ============================================================
+Timed "11_wmi" {
+    $w = "$OutRoot\10_wmi"
+    
+    # Query subscriptions — từng class, có error handling
+    $wmiClasses = @(
+        '__EventFilter'
+        'CommandLineEventConsumer'
+        'ActiveScriptEventConsumer'
+        'LogFileEventConsumer'
+        'NTEventLogEventConsumer'
+        'SMTPEventConsumer'
+        '__FilterToConsumerBinding'
+        '__EventConsumer'
+    )
+    foreach ($cls in $wmiClasses) {
+        try {
+            Get-CimInstance -Namespace root/subscription -ClassName $cls -EA Stop |
+                Select-Object * | Out-File "$w\subscription_$cls.txt" -Encoding UTF8
+        } catch {
+            "ERROR: $($_.Exception.Message)" | Out-File "$w\subscription_$cls.txt" -Encoding UTF8
+        }
+    }
+    
+    # Raw repository
+    $rawDir = "$w\raw_repository"
+    New-Item -ItemType Directory -Path $rawDir -Force | Out-Null
+    $repo = "$env:SystemRoot\System32\wbem\Repository"
+    Get-ChildItem $repo -Recurse -File -EA SilentlyContinue | ForEach-Object {
+        Copy-LockedFile -Source $_.FullName -DestDir $rawDir | Out-Null
+    }
+}
+
+# ============================================================
+# BƯỚC 12: PREFETCH / EXECUTION EVIDENCE
+# ============================================================
+Timed "12_prefetch" {
+    $pf = "$OutRoot\11_prefetch"
+    
+    # Raw prefetch
+    $pfDir = "$env:SystemRoot\Prefetch"
+    if (Test-Path $pfDir) {
+        $dest = "$pf\raw_prefetch"
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        Copy-Item "$pfDir\*" $dest -Force -EA SilentlyContinue
+        Get-ChildItem $pfDir -Filter "*.pf" -EA SilentlyContinue |
+            Select-Object Name, LastWriteTime, Length |
+            Sort-Object LastWriteTime -Descending |
+            Out-File "$pf\prefetch_list.txt" -Encoding UTF8
+    }
+    
+    # Amcache
+    $amc = "$env:SystemRoot\AppCompat\Programs\Amcache.hve"
+    if (Test-Path $amc) {
+        Copy-LockedFile -Source $amc -DestDir $pf | Out-Null
+    }
+    
+    # ShimCache
+    reg export "HKLM\SYSTEM\CurrentControlSet\Control\Session Manager\AppCompatCache" `
+        "$pf\shimcache.reg" /y 2>&1 | Out-Null
+    
+    # BAM
+    reg export "HKLM\SYSTEM\CurrentControlSet\Services\bam\State\UserSettings" `
+        "$pf\bam.reg" /y 2>&1 | Out-Null
+    
+    # UserAssist — tất cả user
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $uname = $_.Name
+        $sid = try {
+            (New-Object System.Security.Principal.NTAccount($uname)).Translate([System.Security.Principal.SecurityIdentifier]).Value
+        } catch { $null }
+        if ($sid) {
+            reg query "HKU\$sid\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist" /s 2>&1 |
+                Out-File "$pf\userassist_$uname.txt" -Encoding UTF8
+        }
+    }
+}
+
+# ============================================================
+# BƯỚC 13: FILESYSTEM
+# ============================================================
+Timed "13_filesystem" {
+    $f = "$OutRoot\12_filesystem"
+    
+    # MFT + NTFS metadata
+    if ($IsAdmin) {
+        Copy-LockedFile -Source "C:\`$MFT" -DestDir "$f\ntfs_meta" | Out-Null
+        Copy-LockedFile -Source "C:\`$LogFile" -DestDir "$f\ntfs_meta" | Out-Null
+        Copy-LockedFile -Source "C:\`$Secure" -DestDir "$f\ntfs_meta" | Out-Null
+        Copy-LockedFile -Source "C:\`$Extend\`$UsnJrnl:`$J" -DestDir "$f\ntfs_meta" | Out-Null
+    } else {
+        "SKIPPED: requires admin" | Out-File "$f\ntfs_meta\_status.txt" -Encoding UTF8
+    }
+    
+    # Directory listing các vị trí user-writable
+    $userPaths = @(
+        "$env:TEMP"
+        "$env:SystemRoot\Temp"
+        "$env:PUBLIC"
+        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
+        "$env:SystemRoot\System32\Tasks"
+        "$env:SystemRoot\Tasks"
+        "$env:SystemRoot\System32\drivers\etc"
+    )
+    foreach ($dir in $userPaths) {
+        if (Test-Path $dir) {
+            $safe = $dir -replace '[\\/:*?"<>|]', '_'
+            Get-ChildItem $dir -Recurse -Force -EA SilentlyContinue |
+                Select-Object FullName, LastWriteTime, CreationTime, Length, Attributes |
+                Sort-Object LastWriteTime -Descending |
+                Out-File "$f\ls_$safe.txt" -Encoding UTF8
+        }
+    }
+    
+    #
+    # ============================================================
+    # Copy nội dung các thư mục user-writable (không filter theo tên)
+    # ============================================================
+    
+    # Public — nơi source của bạn ghi log (nhưng thu khách quan: toàn bộ)
+    if (Test-Path $env:PUBLIC) {
+        $dest = "$f\content_Public"
+        New-Item -ItemType Directory -Path $dest -Force | Out-Null
+        Copy-Item "$env:PUBLIC\*" $dest -Recurse -Force -EA SilentlyContinue
+    }
+    
+    # Temp của TẤT CẢ user
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $tmp = Join-Path $_.FullName "AppData\Local\Temp"
+        if (Test-Path $tmp) {
+            $dest = "$f\content_Temp_$($_.Name)"
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Get-ChildItem $tmp -Recurse -Force -EA SilentlyContinue |
+                Where-Object { !$_.PSIsContainer -and $_.Length -lt 50MB } |
+                ForEach-Object {
+                    $rel = $_.FullName.Substring($tmp.Length).TrimStart('\')
+                    $target = Join-Path $dest $rel
+                    $tdir = Split-Path $target -Parent
+                    if (-not (Test-Path $tdir)) { New-Item -ItemType Directory -Path $tdir -Force | Out-Null }
+                    Copy-Item $_.FullName $target -Force -EA SilentlyContinue
+                }
+        }
+    }
+    
+    # Downloads / Desktop / Documents của tất cả user (chỉ list, không copy để tránh quá lớn)
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $uname = $_.Name
+        foreach ($sub in @('Downloads','Desktop','Documents')) {
+            $p = Join-Path $_.FullName $sub
+            if (Test-Path $p) {
+                Get-ChildItem $p -Recurse -Force -EA SilentlyContinue |
+                    Select-Object FullName, LastWriteTime, CreationTime, Length |
+                    Sort-Object LastWriteTime -Descending |
+                    Out-File "$f\ls_$($uname)_$sub.txt" -Encoding UTF8
+            }
+        }
+    }
+    
+    # ADS (Zone.Identifier) — dấu hiệu tải từ internet
+    Get-ChildItem $env:PUBLIC -Recurse -Force -EA SilentlyContinue |
+        ForEach-Object {
+            $streams = Get-Item $_.FullName -Stream * -EA SilentlyContinue |
+                Where-Object { $_.Stream -ne ':$DATA' }
+            if ($streams) {
+                foreach ($s in $streams) {
+                    "$($_.FullName) :: $($s.Stream) :: size=$($s.Length)"
+                }
+            }
+        } | Out-File "$f\ads_streams.txt" -Encoding UTF8
+    
+    # Recycle Bin
+    Get-ChildItem 'C:\$Recycle.Bin' -Recurse -Force -EA SilentlyContinue |
+        Select-Object FullName, LastWriteTime, Length |
+        Out-File "$f\recycle_bin.txt" -Encoding UTF8
+    
+    # Shadow copies
+    SafeCmd "vssadmin list shadows" "$f\shadow_copies.txt"
+    SafeCmd "vssadmin list shadowstorage" "$f\shadow_storage.txt"
+    
+    # Recently modified files trong 7 ngày (toàn ổ C, để tham khảo)
+    $cutoff = (Get-Date).AddDays(-7)
+    Get-ChildItem "C:\Users" -Recurse -Force -EA SilentlyContinue |
+        Where-Object { !$_.PSIsContainer -and $_.LastWriteTime -gt $cutoff } |
+        Select-Object FullName, LastWriteTime, CreationTime, Length |
+        Sort-Object LastWriteTime -Descending |
+        Out-File "$f\recent_7days_users.txt" -Encoding UTF8
+}
+
+# ============================================================
+# BƯỚC 14: STARTUP / PERSISTENCE
+# ============================================================
+Timed "14_startup" {
+    $s = "$OutRoot\13_startup"
+    
+    # Autoruns — golden standard
+    $ar = Join-Path $ToolsDir "autorunsc64.exe"
+    if (Test-Path $ar) {
+        Log "  Running autorunsc64 (có thể mất 2-5 phút)..."
+        $proc = Start-Process $ar -ArgumentList "-accepteula","-a","*","-c","-h","-s","-nobanner" `
+            -PassThru -WindowStyle Hidden -RedirectStandardOutput "$s\autoruns_full.csv"
+        if (-not $proc.WaitForExit(600000)) { $proc.Kill() }
+        
+        $proc2 = Start-Process $ar -ArgumentList "-accepteula","-a","*","-h","-s","-nobanner" `
+            -PassThru -WindowStyle Hidden -RedirectStandardOutput "$s\autoruns_full.txt"
+        if (-not $proc2.WaitForExit(600000)) { $proc2.Kill() }
+    } else {
+        "MISSING: autorunsc64.exe" | Out-File "$s\_status.txt" -Encoding UTF8
+        # Fallback
+        reg query "HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" 2>&1 | Out-File "$s\run_hklm.txt"
+        reg query "HKCU\SOFTWARE\Microsoft\Windows\CurrentVersion\Run" 2>&1 | Out-File "$s\run_hkcu.txt"
+    }
+    
+    # Startup folders — copy nội dung
+    $startupDirs = @(
+        "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Startup"
+        "$env:ProgramData\Microsoft\Windows\Start Menu\Programs\Startup"
+    )
+    $i = 0
+    foreach ($sd in $startupDirs) {
+        if (Test-Path $sd) {
+            $i++
+            $dest = "$s\startup_content_$i"
+            New-Item -ItemType Directory -Path $dest -Force | Out-Null
+            Copy-Item "$sd\*" $dest -Recurse -Force -EA SilentlyContinue
+            Get-ChildItem $sd -Force | Select-Object Name, LastWriteTime |
+                Out-File "$s\startup_list_$i.txt" -Encoding UTF8
+        }
+    }
+}
+
+# ============================================================
+# BƯỚC 15: MISC
+# ============================================================
+Timed "15_misc" {
+    $m = "$OutRoot\15_misc"
+    
+    # Installed software — QUERY REGISTRY, KHÔNG dùng Win32_Product (side effect)
+    $uninstPaths = @(
+        'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*'
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*'
+    )
+    Get-ItemProperty $uninstPaths -EA SilentlyContinue |
+        Where-Object { $_.DisplayName } |
+        Select-Object DisplayName, DisplayVersion, Publisher, InstallDate, UninstallString |
+        Sort-Object DisplayName | Export-Csv "$m\installed_software.csv" -NoTypeInformation -Encoding UTF8
+    
+    Get-HotFix -EA SilentlyContinue | Sort-Object InstalledOn -Descending |
+        Out-File "$m\hotfixes.txt" -Encoding UTF8
+    
+    # Environment
+    Get-ChildItem Env: | Sort-Object Name |
+        Out-File "$m\env_vars.txt" -Encoding UTF8
+    
+    # Hosts file
+    Copy-Item "$env:SystemRoot\System32\drivers\etc\hosts" "$m\hosts" -Force -EA SilentlyContinue
+    
+    # Clipboard (STA runspace)
+    try {
+        $ps = [PowerShell]::Create()
+        $ps.Runspace = [RunspaceFactory]::CreateRunspace()
+        $ps.Runspace.ApartmentState = 'STA'
+        $ps.Runspace.Open()
+        $ps.AddScript({
+            Add-Type -AssemblyName System.Windows.Forms -EA Stop
+            [System.Windows.Forms.Clipboard]::GetText()
+        }) | Out-Null
+        $clip = $ps.Invoke()
+        $clip | Out-File "$m\clipboard.txt" -Encoding UTF8
+        $ps.Dispose()
+    } catch {
+        "ERROR: $($_.Exception.Message)" | Out-File "$m\clipboard.txt" -Encoding UTF8
+    }
+    
+    # Named pipes — dùng P/Invoke (Directory.GetFiles không work)
+    try {
+        Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public class PipeLister {
+    [DllImport("kernel32.dll", CharSet=CharSet.Auto, SetLastError=true)]
+    public static extern IntPtr FindFirstFile(string lpFileName, out WIN32_FIND_DATA lpFindFileData);
+    [DllImport("kernel32.dll", CharSet=CharSet.Auto, SetLastError=true)]
+    public static extern bool FindNextFile(IntPtr hFindFile, out WIN32_FIND_DATA lpFindFileData);
+    [DllImport("kernel32.dll")]
+    public static extern bool FindClose(IntPtr hFindFile);
+    [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Auto)]
+    public struct WIN32_FIND_DATA {
+        public uint dwFileAttributes;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftCreationTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastAccessTime;
+        public System.Runtime.InteropServices.ComTypes.FILETIME ftLastWriteTime;
+        public uint nFileSizeHigh;
+        public uint nFileSizeLow;
+        public uint dwReserved0;
+        public uint dwReserved1;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst=260)]
+        public string cFileName;
+    }
+}
+"@ -EA Stop
+        $fd = New-Object PipeLister+WIN32_FIND_DATA
+        $h = [PipeLister]::FindFirstFile("\\.\pipe\*", [ref]$fd)
+        $pipes = @()
+        if ($h -ne [IntPtr]::Zero -and $h.ToInt64() -ne -1) {
+            do { $pipes += $fd.cFileName } while ([PipeLister]::FindNextFile($h, [ref]$fd))
+            [PipeLister]::FindClose($h) | Out-Null
+        }
+        $pipes | Out-File "$m\named_pipes.txt" -Encoding UTF8
+    } catch {
+        "ERROR: $($_.Exception.Message)" | Out-File "$m\named_pipes.txt" -Encoding UTF8
+    }
+    
+    # Defender exclusions
+    reg query "HKLM\SOFTWARE\Microsoft\Windows Defender\Exclusions" /s 2>&1 |
+        Out-File "$m\defender_exclusions.txt" -Encoding UTF8
+    
+    # AMSI providers
+    reg query "HKLM\SOFTWARE\Microsoft\AMSI\Providers" /s 2>&1 |
+        Out-File "$m\amsi_providers.txt" -Encoding UTF8
+    
+    # Browser artifacts (Chrome/Edge/Firefox) — cho điều tra exfil
+    $browserFiles = @(
+        @{Path="$env:LOCALAPPDATA\Google\Chrome\User Data\Default\History"; Dest='chrome_history'}
+        @{Path="$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data"; Dest='chrome_login'}
+        @{Path="$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Cookies"; Dest='chrome_cookies'}
+        @{Path="$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\History"; Dest='edge_history'}
+        @{Path="$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data"; Dest='edge_login'}
+        @{Path="$env:APPDATA\Mozilla\Firefox\Profiles"; Dest='firefox_profiles'}
+    )
+    $bdir = "$m\browser_artifacts"
+    New-Item -ItemType Directory -Path $bdir -Force | Out-Null
+    foreach ($b in $browserFiles) {
+        if (Test-Path $b.Path) {
+            if ((Get-Item $b.Path).PSIsContainer) {
+                Copy-Item $b.Path "$bdir\$($b.Dest)" -Recurse -Force -EA SilentlyContinue
+            } else {
+                Copy-Item $b.Path "$bdir\$($b.Dest)" -Force -EA SilentlyContinue
+            }
+        }
+    }
+    
+    # DPAPI master keys + Credential Manager
+    $dpapi = "$m\dpapi"
+    New-Item -ItemType Directory -Path $dpapi -Force | Out-Null
+    Get-ChildItem "C:\Users" -Directory -EA SilentlyContinue | ForEach-Object {
+        $protect = Join-Path $_.FullName "AppData\Roaming\Microsoft\Protect"
+        if (Test-Path $protect) {
+            Copy-Item $protect "$dpapi\Protect_$($_.Name)" -Recurse -Force -EA SilentlyContinue
+        }
+        $cred = Join-Path $_.FullName "AppData\Local\Microsoft\Credentials"
+        if (Test-Path $cred) {
+            Copy-Item $cred "$dpapi\Credentials_$($_.Name)" -Recurse -Force -EA SilentlyContinue
+        }
+    }
+}
+
+# ============================================================
+# BƯỚC 16: ANTI-FORENSIC INDICATORS (tổng hợp)
+# ============================================================
+Timed "16_anti_forensic" {
+    $a = "$OutRoot\16_anti_forensic"
+    $report = @()
+    
+    # 1. Channel bị disable
+    $channels = Get-WinEvent -ListLog * -EA SilentlyContinue |
+        Where-Object { -not $_.IsEnabled }
+    if ($channels) {
+        $report += "=== DISABLED CHANNELS ==="
+        $channels | ForEach-Object { $report += "  $($_.LogName) (LastWrite: $($_.LastWriteTime))" }
+        $channels | Select-Object LogName, LastWriteTime, FileSize |
+            Export-Csv "$a\disabled_channels.csv" -NoTypeInformation -Encoding UTF8
+    }
+    
+    # 2. Channel bị clear (RecordCount=0 nhưng file size nhỏ + thời gian gần đây)
+    $cleared = Get-WinEvent -ListLog * -EA SilentlyContinue |
+        Where-Object { $_.RecordCount -eq 0 -and $_.IsEnabled -and $_.FileSize -lt 70000 -and $_.LogFilePath }
+    if ($cleared) {
+        $report += ""
+        $report += "=== SUSPICIOUS EMPTY CHANNELS (possible clear) ==="
+        $cleared | ForEach-Object {
+            $report += "  $($_.LogName) | FileSize=$($_.FileSize) | LastWrite=$($_.LastWriteTime)"
+        }
+        $cleared | Select-Object LogName, FileSize, LastWriteTime |
+            Export-Csv "$a\suspicious_empty_channels.csv" -NoTypeInformation -Encoding UTF8
+    }
+    
+    # 3. Security event 1102 (log cleared)
+    try {
+        $ev1102 = Get-WinEvent -FilterHashtable @{LogName='Security'; Id=1102} -MaxEvents 100 -EA Stop
+        if ($ev1102) {
+            $report += ""
+            $report += "=== SECURITY LOG CLEARED (Event 1102) ==="
+            $ev1102 | ForEach-Object { $report += "  $($_.TimeCreated) | $($_.Message)" }
+        }
+    } catch {}
+    
+    # 4. Registry policy tắt logging
+    $policyKeys = @(
+        'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\ModuleLogging'
+        'HKLM:\SOFTWARE\Policies\Microsoft\Windows\PowerShell\Transcription'
+        'HKLM:\SOFTWARE\Wow6432Node\Policies\Microsoft\Windows\PowerShell\ScriptBlockLogging'
+        'HKLM:\SOFTWARE\Wow6432Node\Policies\Microsoft\Windows\PowerShell\ModuleLogging'
+        'HKLM:\SOFTWARE\Wow6432Node\Policies\Microsoft\Windows\PowerShell\Transcription'
+    )
+    $report += ""
+    $report += "=== POWERSHELL LOGGING POLICY ==="
+    foreach ($k in $policyKeys) {
+        if (Test-Path $k) {
+            $props = Get-ItemProperty $k -EA SilentlyContinue
+            $report += "  $k :"
+            $props.PSObject.Properties | Where-Object { $_.Name -notlike 'PS*' } |
+                ForEach-Object { $report += "    $($_.Name) = $($_.Value)" }
+        }
+    }
+    
+    # 5. Scheduled task có action wevtutil cl / vssadmin delete
+    $tasks = Get-ScheduledTask -EA SilentlyContinue
+    $suspiciousTasks = $tasks | Where-Object {
+        $_.Actions | Where-Object {
+            $_.Execute -match 'cmd|powershell' -and $_.Arguments -match 'wevtutil\s+cl|vssadmin\s+delete|Clear-EventLog'
+        }
+    }
+    if ($suspiciousTasks) {
+        $report += ""
+        $report += "=== SCHEDULED TASKS WITH LOG CLEARING ==="
+        $suspiciousTasks | ForEach-Object {
+            $report += "  $($_.TaskPath)$($_.TaskName)"
+            $_.Actions | ForEach-Object { $report += "    Action: $($_.Execute) $($_.Arguments)" }
+        }
+        $suspiciousTasks | Select-Object TaskName, TaskPath |
+            Export-Csv "$a\suspicious_tasks_logclear.csv" -NoTypeInformation -Encoding UTF8
+    }
+    
+    # 6. Shadow copy bị xóa
+    $shadowOut = & vssadmin list shadows 2>&1 | Out-String
+    if ($shadowOut -match 'No items found|Không tìm thấy') {
+        $report += ""
+        $report += "=== NO SHADOW COPIES (possibly deleted) ==="
+    }
+    
+    # 7. Defender bị tắt
+    $defStatus = Get-MpComputerStatus -EA SilentlyContinue
+    if ($defStatus) {
+        $report += ""
+        $report += "=== DEFENDER STATUS ==="
+        $report += "  RealTimeProtectionEnabled: $($defStatus.RealTimeProtectionEnabled)"
+        $report += "  AntivirusEnabled: $($defStatus.AntivirusEnabled)"
+        $report += "  TamperProtectionSource: $($defStatus.TamperProtectionSource)"
+    }
+    
+    # 8. Process cha-con bất thường (cmd/powershell spawn từ process không phải shell)
+    $suspParent = Get-CimInstance Win32_Process -EA SilentlyContinue |
+        Where-Object { $_.Name -match '^(powershell|pwsh|cmd|wscript|cscript|mshta|rundll32|regsvr32)\.exe$' } |
+        ForEach-Object {
+            $parent = Get-CimInstance Win32_Process -Filter "ProcessId=$($_.ParentProcessId)" -EA SilentlyContinue
+            if ($parent -and $parent.Name -notmatch '^(explorer|cmd|powershell|pwsh|services|svchost|wininit|userinit|taskeng|taskhostw|schtasks|wmiprvse)\.exe$') {
+                [PSCustomObject]@{
+                    PID = $_.ProcessId
+                    Name = $_.Name
+                    CMD = $_.CommandLine
+                    PPID = $_.ParentProcessId
+                    ParentName = $parent.Name
+                    ParentCMD = $parent.CommandLine
+                }
+            }
+        }
+    if ($suspParent) {
+        $report += ""
+        $report += "=== SUSPICIOUS PROCESS PARENT-CHILD ==="
+        $suspParent | ForEach-Object {
+            $report += "  $($_.Name) (PID $($_.PID)) <- parent $($_.ParentName) (PPID $($_.PPID))"
+            $report += "    CMD: $($_.CMD)"
+        }
+        $suspParent | Export-Csv "$a\suspicious_parent_child.csv" -NoTypeInformation -Encoding UTF8
+    }
+    
+    $report | Out-File "$a\_ANTI_FORENSIC_INDICATORS.txt" -Encoding UTF8
+    Log "  Anti-forensic report written ($($report.Count) lines)"
+}
+
+# ============================================================
+# BƯỚC 17: README + MANIFEST
+# ============================================================
+Timed "17_finalize" {
+    $EndTime = Get-Date
+    $Duration = [Math]::Round(($EndTime - $StartTime).TotalMinutes, 2)
+    
+    # README
+    $readme = @"
+================================================================
+FORENSIC EVIDENCE COLLECTION - CASE $CaseID
+================================================================
+
+Collection start : $($StartTime.ToString('yyyy-MM-dd HH:mm:ss zzz'))
+Collection end   : $($EndTime.ToString('yyyy-MM-dd HH:mm:ss zzz'))
+Duration         : $Duration minutes
+Hostname         : $env:COMPUTERNAME
+Collected by     : $env:USERNAME
+Is Admin         : $IsAdmin
+Script version   : v2
+
+CẤU TRÚC THƯ MỤC
+-----------------
+00_meta         : Thời gian hệ thống, thông tin OS/hardware/user, hash & signature của tools
+01_volatile     : RAM dump (memory.raw), pagefile, hiberfil, swapfile
+02_network      : netstat, DNS cache, ARP, firewall, SMB sessions/shares
+03_processes    : Process list (PID/PPID/CMD/owner), process tree, hash executable, DLLs
+04_services     : Services (registry + WMI + sc query)
+05_tasks        : Scheduled tasks (XML definitions + TaskCache registry)
+06_users        : Logged-on users, PS history, recent LNK của tất cả user
+07_drivers      : System drivers
+08_eventlogs    : Tất cả .evtx channels + inventory + security/sysmon events quan trọng
+09_registry     : Text export + raw hives (SAM/SECURITY/SOFTWARE/SYSTEM/NTUSER)
+10_wmi          : WMI subscriptions (root/subscription) + raw repository
+11_prefetch     : Prefetch, Amcache, ShimCache, BAM, UserAssist
+12_filesystem   : MFT, $LogFile, $Secure, USN Journal, listing & content user-writable paths
+13_startup      : Autoruns full, startup folders content
+14_handles      : handle64 output (tất cả handle mở)
+15_misc         : Installed software, hosts, clipboard, named pipes, browser artifacts, DPAPI
+16_anti_forensic: Tổng hợp indicators của anti-forensic (channel disabled/cleared, policy tắt log, task xóa log)
+
+TOOLS ĐÃ DÙNG
+-------------
+$(Get-ChildItem $ToolsDir -File -EA SilentlyContinue | ForEach-Object { "  - $($_.Name)" } | Out-String)
+
+CHAIN OF CUSTODY NOTES
+----------------------
+- RAM dump thực hiện BLOCKING trước mọi thao tác khác (tuân thủ RFC 3227)
+- Tất cả file evidence đã được hash SHA256 trong _MANIFEST_SHA256.txt
+- Tool signatures đã verify trong 00_meta\tool_integrity.txt
+- Timing từng bước trong 00_meta\_timing.txt
+- NTFS last access: $(fsutil behavior query disablelastaccess 2>&1 | Select-Object -First 1)
+
+HẠN CHẾ
+-------
+- Nếu Is Admin = False: SAM/SECURITY/MFT/pagefile/hiberfil có thể không thu thập được
+- Một số channel đã bị clear/disable bởi attacker — xem 16_anti_forensic
+- handle64 và autoruns có thể timeout nếu máy quá tải
+"@
+    $readme | Out-File "$OutRoot\_README.txt" -Encoding UTF8
+    
+    # MANIFEST — hash toàn bộ evidence (bao gồm memory.raw)
+    Log "  Hashing all evidence files..."
+    $manifest = "$OutRoot\_MANIFEST_SHA256.txt"
+    @(
+        "Evidence Collection - $CaseID"
+        "Collected by  : $env:USERNAME @ $env:COMPUTERNAME"
+        "Collection Start: $($StartTime.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
+        "Collection End  : $($EndTime.ToString('yyyy-MM-dd HH:mm:ss zzz'))"
+        "=" * 70
+    ) | Out-File $manifest -Encoding UTF8
+    
+    Get-ChildItem $OutRoot -Recurse -File -EA SilentlyContinue |
+        Where-Object { $_.Name -ne "_MANIFEST_SHA256.txt" } |
+        ForEach-Object {
+            $hash = try { (Get-FileHash $_.FullName -Algorithm SHA256 -EA Stop).Hash }
+                    catch { "ERROR: $($_.Exception.Message)" }
+            "$hash  $($_.FullName.Replace($OutRoot, '.'))"
+        } | Out-File $manifest -Append -Encoding UTF8
+    
+    # Tổng kết
+    $totalFiles = (Get-ChildItem $OutRoot -Recurse -File -EA SilentlyContinue).Count
+    $totalSize = [Math]::Round(((Get-ChildItem $OutRoot -Recurse -File -EA SilentlyContinue |
+        Measure-Object Length -Sum).Sum / 1MB), 2)
+    
+    Log "============================================================" 'OK'
+    Log "COLLECTION COMPLETE" 'OK'
+    Log "============================================================" 'OK'
+    Log "Output     : $OutRoot"
+    Log "Total files: $totalFiles"
+    Log "Total size : $totalSize MB"
+    Log "Duration   : $Duration minutes"
+    Log "Next step  : Chuyển toàn bộ thư mục $OutRoot sang máy analysis"
+    Log "             (USB ngoài, verify manifest SHA256 trước khi phân tích)"
+}
+
+# ============================================================
+# END
+# ============================================================

